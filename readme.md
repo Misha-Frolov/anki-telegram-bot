@@ -32,8 +32,7 @@ The bot accepts words or phrases, processes them with the OpenAI API, generates 
 
 ## Requirements
 
-* Node.js 14.21.3
-* npm 6.14.18
+* Node.js 18+
 * Anki
 * AnkiConnect addon
 

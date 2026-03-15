@@ -1,70 +1,14 @@
 import OpenAI from "openai"
-import { OPENAI_KEY } from "./config.js"
+import {OPENAI_KEY} from "./config.js"
 
-const openai = new OpenAI({apiKey:OPENAI_KEY})
+const openai = new OpenAI({apiKey: OPENAI_KEY})
 
-export async function generateCards(text){
+const SYSTEM_PROMPT = `
+Generate Anki card JSON for English vocabulary.
 
-    const prompt = `
-You generate structured data for Anki cards.
+Keep phrases intact. Do not split phrases into words.
 
-INPUT
-Arbitrary English text that may contain:
-
-- single words
-- phrases
-- sentences
-- commas or separators
-
-TASK
-
-Extract vocabulary items.
-
-Rules:
-
-- keep phrases intact
-- do not split phrases into words
-- normalize whitespace
-- remove surrounding punctuation
-- preserve order of appearance
-- return each item only once
-- normalize single words to lowercase
-
-OUTPUT
-
-Return ONLY a valid JSON array.
-
-Do not include explanations.
-Do not include markdown.
-Do not include code blocks.
-Output must be valid JSON.parse().
-
-SCHEMA
-
-Each element must follow exactly this schema:
-
-{
-"word": string,
-"translation": string,
-"example": string,
-"deck": string,
-"tags": [string,string]
-}
-
-FIELD RULES
-
-word
-English word or phrase exactly as extracted from the input.
-
-translation
-Russian translation suitable for everyday usage.
-
-example
-One natural English sentence using the word or phrase.
-
-deck
-Must be EXACTLY one of the following values:
-
+Deck must be one of:
 Health & Body
 Home & Daily Life
 Travel & Transport
@@ -75,43 +19,55 @@ Work & Career
 Personality & Emotions
 Objects & Concepts
 
-tags
-
-Array with exactly two elements.
-
-First element must be one of:
-
-level∷A1
-level∷A2
-level∷B1
-level∷B2
-level∷C1
-
-Second element must be one of:
-
-pos∷noun
-pos∷verb
-pos∷adjective
-pos∷adverb
-pos∷phrase
-pos∷phrasal_verb
-
-Text:
-
-${text}
+Tags:
+level∷A1/A2/B1/B2/C1
+pos∷noun/verb/adjective/adverb/phrase/phrasal_verb
 `
 
+export async function generateCards(rawText) {
     const res = await openai.chat.completions.create({
-        model:"gpt-4.1-mini",
+        model: "gpt-4.1-mini",
         temperature: 0,
-        messages:[
-            {role:"user",content:prompt}
+        response_format: {
+            type: "json_schema",
+            json_schema: {
+                name: "anki_cards",
+                schema: {
+                    type: "array",
+                    items: {
+                        type: "object",
+                        properties: {
+                            word: {type: "string"},
+                            translation: {type: "string"},
+                            example: {type: "string"},
+                            deck: {type: "string"},
+                            tags: {
+                                type: "array",
+                                items: {type: "string"},
+                                minItems: 2,
+                                maxItems: 2
+                            }
+                        },
+                        required: ["word", "translation", "example", "deck", "tags"]
+                    }
+                }
+            }
+        },
+        messages: [
+            {role: "system", content: SYSTEM_PROMPT},
+            {role: "user", content: rawText}
         ]
     })
 
-    const content = res.choices[0].message.content
-        .replace(/```json/g,"")
-        .replace(/```/g,"")
+    const text = res.choices[0].message.content
 
-    return JSON.parse(content)
+    let json
+
+    try {
+        json = JSON.parse(text)
+    } catch {
+        throw new Error("INVALID_JSON_FROM_LLM")
+    }
+
+    return json
 }
