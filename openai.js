@@ -17,6 +17,7 @@ const DECKS = new Set([
 
 const SYSTEM_PROMPT = `
 Generate Anki card JSON for English vocabulary.
+Translation must be in Russian. Do not explain the word in English.
 
 Keep phrases intact. Do not split phrases into words.
 
