@@ -31,6 +31,14 @@ db.serialize(() => {
             output TEXT
         )
     `)
+
+    // persistent key-value settings
+    db.run(`
+        CREATE TABLE IF NOT EXISTS settings (
+            key TEXT PRIMARY KEY,
+            value TEXT
+        )
+    `)
 })
 
 /*
@@ -146,6 +154,32 @@ export function setLLMCache(input,output){
                     return
                 }
                 resolve()
+            }
+        )
+    })
+}
+
+export function getSetting(key) {
+    return new Promise((resolve, reject) => {
+        db.get(
+            "SELECT value FROM settings WHERE key=?",
+            [key],
+            (err, row) => {
+                if (err) reject(err)
+                else resolve(row ? row.value : null)
+            }
+        )
+    })
+}
+
+export function setSetting(key, value) {
+    return new Promise((resolve, reject) => {
+        db.run(
+            "INSERT OR REPLACE INTO settings(key,value) VALUES(?,?)",
+            [key, value],
+            err => {
+                if (err) reject(err)
+                else resolve()
             }
         )
     })

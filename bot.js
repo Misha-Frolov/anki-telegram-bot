@@ -5,7 +5,7 @@ import {TELEGRAM_TOKEN, MODEL, ADMIN_ID} from "./config.js"
 import {addText, getAll, clearQueue} from "./queue.js"
 import {generateCards} from "./openai.js"
 import {anki} from "./anki.js"
-import {getCachedWords, addCachedWords, clearAnkiCache, getLLMCache, setLLMCache} from "./db.js"
+import {getCachedWords, addCachedWords, clearAnkiCache, getLLMCache, setLLMCache, getSetting, setSetting} from "./db.js"
 import {downloadAudio} from "./tts.js"
 
 const bot = new TelegramBot(
@@ -35,6 +35,15 @@ bot.setMyCommands([
 let queueMessageId = null
 let importInProgress = false
 let pendingCards = null
+
+function setQueueMessageId(id) {
+    queueMessageId = id
+    setSetting("queue_message_id", id ? String(id) : "0").catch(console.error)
+}
+
+getSetting("queue_message_id").then(val => {
+    if (val && val !== "0") queueMessageId = Number(val)
+}).catch(console.error)
 
 function normalize(word) {
     return word
@@ -114,11 +123,11 @@ async function updateQueueMessage(chatId, isAdmin = false) {
                 )
                 return
             } catch {
-                queueMessageId = null
+                setQueueMessageId(null)
             }
         }
         const sent = await bot.sendMessage(chatId, text)
-        queueMessageId = sent.message_id
+        setQueueMessageId(sent.message_id)
         return
     }
 
@@ -157,11 +166,11 @@ async function updateQueueMessage(chatId, isAdmin = false) {
             await bot.editMessageText(message, {chat_id: chatId, message_id: queueMessageId, ...markup})
             return
         } catch {
-            queueMessageId = null
+            setQueueMessageId(null)
         }
     }
     const sent = await bot.sendMessage(chatId, message, markup)
-    queueMessageId = sent.message_id
+    setQueueMessageId(sent.message_id)
 }
 
 bot.on("message", async msg => {
@@ -224,7 +233,7 @@ async function runImport(chatId) {
         if (!missing.length) {
             await sendTempMessage(chatId, "All words already exist in Anki")
             await clearQueue()
-            queueMessageId = null
+            setQueueMessageId(null)
             return
         }
 
@@ -256,7 +265,7 @@ async function runImport(chatId) {
         await anki("addNotes", {notes})
         await addCachedWords(cards.map(c => normalize(c.word)))
         await clearQueue()
-        queueMessageId = null
+        setQueueMessageId(null)
 
         await sendTempMessage(chatId, `Imported ${notes.length} cards`)
     } catch (err) {
@@ -338,7 +347,7 @@ bot.onText(/\/clear/, async msg => {
         return
     }
     await clearQueue()
-    queueMessageId = null
+    setQueueMessageId(null)
     await updateQueueMessage(msg.chat.id, msg.from.id === ADMIN_ID)
 })
 
@@ -355,6 +364,12 @@ bot.on("callback_query", async q => {
     const chatId = q.message.chat.id
     const messageId = q.message.message_id
     let items
+
+    if (queueMessageId && messageId !== queueMessageId) {
+        await bot.deleteMessage(chatId, messageId).catch(() => {})
+        await bot.answerCallbackQuery(q.id, {text: "This message is outdated"})
+        return
+    }
 
     try {
         switch (q.data) {
@@ -383,7 +398,7 @@ bot.on("callback_query", async q => {
                     const missing = items.filter(t => !existing.has(normalize(t)))
                     if (!missing.length) {
                         await clearQueue()
-                        queueMessageId = null
+                        setQueueMessageId(null)
                         pendingCards = null
                         await bot.editMessageText(
                             "All words already exist in Anki",
@@ -478,7 +493,7 @@ bot.on("callback_query", async q => {
                     await addCachedWords(cards.map(c => normalize(c.word)))
                     await clearQueue()
                     pendingCards = null
-                    queueMessageId = null
+                    setQueueMessageId(null)
                     await bot.editMessageText(
                         `Imported ${notes.length} card${notes.length !== 1 ? "s" : ""}`,
                         {chat_id: chatId, message_id: messageId}
@@ -507,7 +522,7 @@ bot.on("callback_query", async q => {
                 }
                 await clearQueue()
                 pendingCards = null
-                queueMessageId = messageId
+                setQueueMessageId(messageId)
                 await bot.editMessageText(
                     "Queue cleared",
                     {
