@@ -185,6 +185,28 @@ export function setSetting(key, value) {
     })
 }
 
+export async function addTokenUsage(promptTokens, completionTokens) {
+    const [p, c] = await Promise.all([
+        getSetting("total_prompt_tokens"),
+        getSetting("total_completion_tokens"),
+    ])
+    await Promise.all([
+        setSetting("total_prompt_tokens", String((Number(p) || 0) + promptTokens)),
+        setSetting("total_completion_tokens", String((Number(c) || 0) + completionTokens)),
+    ])
+}
+
+export async function getTokenUsage() {
+    const [p, c] = await Promise.all([
+        getSetting("total_prompt_tokens"),
+        getSetting("total_completion_tokens"),
+    ])
+    return {
+        promptTokens: Number(p) || 0,
+        completionTokens: Number(c) || 0,
+    }
+}
+
 export function clearAnkiCache() {
     return new Promise((resolve, reject) => {
         db.run(

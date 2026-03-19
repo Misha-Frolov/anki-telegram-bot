@@ -78,5 +78,5 @@ export async function generateCards(rawText) {
         throw new Error(`INVALID_DECK_FROM_LLM: ${invalid.deck}`)
     }
 
-    return json
+    return {cards: json, usage: res.usage}
 }

@@ -5,7 +5,7 @@ import {TELEGRAM_TOKEN, MODEL, ADMIN_ID} from "./config.js"
 import {addText, getAll, clearQueue} from "./queue.js"
 import {generateCards} from "./openai.js"
 import {anki} from "./anki.js"
-import {getCachedWords, addCachedWords, clearAnkiCache, getLLMCache, setLLMCache, getSetting, setSetting} from "./db.js"
+import {getCachedWords, addCachedWords, clearAnkiCache, getLLMCache, setLLMCache, getSetting, setSetting, addTokenUsage, getTokenUsage} from "./db.js"
 import {downloadAudio} from "./tts.js"
 
 const bot = new TelegramBot(
@@ -29,7 +29,8 @@ bot.setMyCommands([
     {command: "start", description: "Start bot"},
     {command: "import", description: "Import queued words to Anki"},
     {command: "clear", description: "Clear queue"},
-    {command: "resync", description: "Rebuild Anki cache"}
+    {command: "resync", description: "Rebuild Anki cache"},
+    {command: "stats", description: "Show token usage and cost"},
 ]).catch(console.error)
 
 let queueMessageId = null
@@ -240,8 +241,10 @@ async function runImport(chatId) {
         const raw = missing.join("\n")
         let cards = await getLLMCache(raw)
         if (!cards) {
-            cards = await generateCards(raw)
+            const result = await generateCards(raw)
+            cards = result.cards
             await setLLMCache(raw, cards)
+            await addTokenUsage(result.usage.prompt_tokens, result.usage.completion_tokens).catch(console.error)
         }
 
         if (!cards.length) {
@@ -341,6 +344,20 @@ bot.onText(/\/resync/, async msg => {
     }
 })
 
+// gpt-4.1-mini pricing (per 1M tokens)
+const PRICE_INPUT  = 0.40
+const PRICE_OUTPUT = 1.60
+
+bot.onText(/\/stats/, async msg => {
+    if (msg.from.id !== ADMIN_ID) return
+    const {promptTokens, completionTokens} = await getTokenUsage()
+    const cost = (promptTokens * PRICE_INPUT + completionTokens * PRICE_OUTPUT) / 1_000_000
+    await sendTempMessage(
+        msg.chat.id,
+        `Tokens used:\nInput: ${promptTokens.toLocaleString()}\nOutput: ${completionTokens.toLocaleString()}\nCost: $${cost.toFixed(4)}`
+    )
+})
+
 bot.onText(/\/clear/, async msg => {
     const items = await getAll()
     if (!items.length) {
@@ -410,8 +427,10 @@ bot.on("callback_query", async q => {
                     const raw = missing.join("\n")
                     let cards = await getLLMCache(raw)
                     if (!cards) {
-                        cards = await generateCards(raw)
+                        const result = await generateCards(raw)
+                        cards = result.cards
                         await setLLMCache(raw, cards)
+                        await addTokenUsage(result.usage.prompt_tokens, result.usage.completion_tokens).catch(console.error)
                     }
                     if (!cards.length) {
                         pendingCards = null
