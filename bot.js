@@ -27,7 +27,6 @@ ensureAnkiCache().catch(console.error)
 
 bot.setMyCommands([
     {command: "start", description: "Start bot"},
-    {command: "import", description: "Import queued words to Anki"},
     {command: "clear", description: "Clear queue"},
     {command: "resync", description: "Rebuild Anki cache"},
     {command: "stats", description: "Show token usage and cost"},
@@ -208,107 +207,6 @@ bot.on("message", async msg => {
     }
 })
 
-/**
- * @typedef {Object} Card
- * @property {string} word
- * @property {string} translation
- * @property {string} example
- * @property {string} deck
- * @property {string[]} tags
- */
-async function runImport(chatId) {
-    if (importInProgress) {
-        await sendTempMessage(chatId, "Import already in progress")
-        return
-    }
-
-    importInProgress = true
-
-    try {
-        const texts = await getAll()
-        if (!texts.length) return
-
-        const existing = await getCachedWords()
-        const missing = texts.filter(t => !existing.has(normalize(t)))
-
-        if (!missing.length) {
-            await sendTempMessage(chatId, "All words already exist in Anki")
-            await clearQueue()
-            setQueueMessageId(null)
-            return
-        }
-
-        const raw = missing.join("\n")
-        let cards = await getLLMCache(raw)
-        if (!cards) {
-            const result = await generateCards(raw)
-            cards = result.cards
-            await setLLMCache(raw, cards)
-            await addTokenUsage(result.usage.prompt_tokens, result.usage.completion_tokens).catch(console.error)
-        }
-
-        if (!cards.length) {
-            await sendTempMessage(chatId, "No vocabulary detected")
-            return
-        }
-        const audio = await mapLimit(cards, 5, c => downloadAudio(c.word))
-
-        const notes = cards.map((c, i) => ({
-            deckName: c.deck,
-            modelName: MODEL,
-            fields: {
-                Word: c.word,
-                Translation: c.translation,
-                Example: c.example,
-                Pronunciation: audio[i]
-            },
-            tags: c.tags
-        }))
-
-        await anki("addNotes", {notes})
-        await addCachedWords(cards.map(c => normalize(c.word)))
-        await clearQueue()
-        setQueueMessageId(null)
-
-        await sendTempMessage(chatId, `Imported ${notes.length} cards`)
-    } catch (err) {
-        if (err.code === "insufficient_quota") {
-            await sendTempMessage(chatId, "OpenAI API quota exceeded. Check billing.")
-            await updateQueueMessage(chatId)
-            return
-        }
-        if (err.message === "INVALID_JSON_FROM_LLM") {
-            await sendTempMessage(chatId, "Failed to parse AI response. Please try again.")
-            await updateQueueMessage(chatId)
-            return
-        }
-        if (err.message?.startsWith("INVALID_DECK_FROM_LLM")) {
-            await sendTempMessage(chatId, "AI returned an unknown deck. Please try again.")
-            await updateQueueMessage(chatId)
-            return
-        }
-        console.log(err)
-        await updateQueueMessage(chatId)
-    } finally {
-        importInProgress = false
-    }
-}
-
-bot.onText(/\/import/, async msg => {
-    if (msg.from.id !== ADMIN_ID) {
-        await sendTempMessage(msg.chat.id, "Only the deck owner can import cards.")
-        return
-    }
-    const items = await getAll()
-    if (!items.length) {
-        return
-    }
-    try {
-        await runImport(msg.chat.id)
-    } catch (err) {
-        console.log(err)
-    }
-})
 
 bot.onText(/\/start/, async msg => {
     await sendTempMessage(msg.chat.id, "Send words or phrases")
@@ -514,7 +412,7 @@ bot.on("callback_query", async q => {
                     pendingCards = null
                     setQueueMessageId(null)
                     await bot.editMessageText(
-                        `Imported ${notes.length} card${notes.length !== 1 ? "s" : ""}`,
+                        `Imported ${notes.length} card${notes.length !== 1 ? "s" : ""}:\n\n${cards.map(c => c.word).join("\n")}`,
                         {chat_id: chatId, message_id: messageId}
                     )
                     await bot.answerCallbackQuery(q.id)
