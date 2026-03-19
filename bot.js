@@ -125,33 +125,36 @@ async function updateQueueMessage(chatId, isAdmin = false) {
     const limit = 5
     const preview = items
         .slice(0, limit)
-        .map((w, i) => `${i + 1}. ${w}`)
+        .map((w, i) => `${i + 1}. ${w.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}`)
         .join("\n")
-    let message =
-        `Queued words: ${items.length}\n\n${preview}`
+    let message = `Queued words: ${items.length}\n\n${preview}`
     if (items.length > limit) {
         message += `\n...and ${items.length - limit} more`
     }
+
+    let allExist = false
+    try {
+        const cached = await getCachedWords()
+        allExist = items.every(t => cached.has(normalize(t)))
+    } catch {}
+
+    if (allExist) {
+        message += `\n\n<b>All words already exist in Anki</b>`
+    }
+
+    const buttons = isAdmin
+        ? [
+            ...(!allExist ? [{text: "Generate flashcards", callback_data: "generate"}] : []),
+            {text: "Clear queue", callback_data: "clear"}
+          ]
+        : []
     const markup = {
-        reply_markup: {
-            inline_keyboard: isAdmin
-                ? [[
-                    {text: "Generate flashcards", callback_data: "generate"},
-                    {text: "Clear queue", callback_data: "clear"}
-                ]]
-                : []
-        }
+        parse_mode: "HTML",
+        reply_markup: {inline_keyboard: buttons.length ? [buttons] : []}
     }
     if (queueMessageId) {
         try {
-            await bot.editMessageText(
-                message,
-                {
-                    chat_id: chatId,
-                    message_id: queueMessageId,
-                    ...markup
-                }
-            )
+            await bot.editMessageText(message, {chat_id: chatId, message_id: queueMessageId, ...markup})
             return
         } catch {
             queueMessageId = null
