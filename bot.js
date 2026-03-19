@@ -34,6 +34,7 @@ bot.setMyCommands([
 
 let queueMessageId = null
 let importInProgress = false
+let pendingCards = null
 
 function normalize(word) {
     return word
@@ -111,13 +112,13 @@ async function updateQueueMessage(chatId, isAdmin = false) {
                         reply_markup: { inline_keyboard: [] }
                     }
                 )
+                return
             } catch {
                 queueMessageId = null
             }
-        } else {
-            const sent = await bot.sendMessage(chatId, text)
-            queueMessageId = sent.message_id
         }
+        const sent = await bot.sendMessage(chatId, text)
+        queueMessageId = sent.message_id
         return
     }
 
@@ -135,7 +136,7 @@ async function updateQueueMessage(chatId, isAdmin = false) {
         reply_markup: {
             inline_keyboard: isAdmin
                 ? [[
-                    {text: "Import to Anki", callback_data: "import"},
+                    {text: "Generate flashcards", callback_data: "generate"},
                     {text: "Clear queue", callback_data: "clear"}
                 ]]
                 : []
@@ -151,13 +152,13 @@ async function updateQueueMessage(chatId, isAdmin = false) {
                     ...markup
                 }
             )
+            return
         } catch {
             queueMessageId = null
         }
-    } else {
-        const sent = await bot.sendMessage(chatId, message, markup)
-        queueMessageId = sent.message_id
     }
+    const sent = await bot.sendMessage(chatId, message, markup)
+    queueMessageId = sent.message_id
 }
 
 bot.on("message", async msg => {
@@ -333,6 +334,14 @@ bot.onText(/\/clear/, async msg => {
     await updateQueueMessage(msg.chat.id, msg.from.id === ADMIN_ID)
 })
 
+function formatCardsPreview(cards) {
+    const lines = cards.map(c => {
+        const tags = c.tags.join("  ")
+        return `<b>${c.word}</b> — ${c.translation}\n<i>${c.example}</i>\n${c.deck}  ${tags}`
+    })
+    return `Generated ${cards.length} card${cards.length !== 1 ? "s" : ""}:\n\n` + lines.join("\n\n")
+}
+
 bot.on("callback_query", async q => {
 
     const chatId = q.message.chat.id
@@ -342,9 +351,9 @@ bot.on("callback_query", async q => {
     try {
         switch (q.data) {
 
-            case "import":
+            case "generate":
                 if (q.from.id !== ADMIN_ID) {
-                    await bot.answerCallbackQuery(q.id, { text: "Only the deck owner can import cards." })
+                    await bot.answerCallbackQuery(q.id, {text: "Only the deck owner can generate cards."})
                     return
                 }
                 if (importInProgress) {
@@ -353,39 +362,148 @@ bot.on("callback_query", async q => {
                 }
                 items = await getAll()
                 if (!items.length) {
-                    await bot.answerCallbackQuery(q.id, { text: "Queue is empty" })
+                    await bot.answerCallbackQuery(q.id, {text: "Queue is empty"})
                     return
                 }
+                importInProgress = true
+                await bot.editMessageText(
+                    "Generating flashcards...",
+                    {chat_id: chatId, message_id: messageId}
+                )
+                try {
+                    const existing = await getCachedWords()
+                    const missing = items.filter(t => !existing.has(normalize(t)))
+                    if (!missing.length) {
+                        await clearQueue()
+                        queueMessageId = null
+                        pendingCards = null
+                        await bot.editMessageText(
+                            "All words already exist in Anki",
+                            {chat_id: chatId, message_id: messageId, reply_markup: {inline_keyboard: []}}
+                        )
+                        await bot.answerCallbackQuery(q.id)
+                        break
+                    }
+                    const raw = missing.join("\n")
+                    let cards = await getLLMCache(raw)
+                    if (!cards) {
+                        cards = await generateCards(raw)
+                        await setLLMCache(raw, cards)
+                    }
+                    if (!cards.length) {
+                        pendingCards = null
+                        await bot.editMessageText(
+                            "No vocabulary detected",
+                            {chat_id: chatId, message_id: messageId, reply_markup: {inline_keyboard: []}}
+                        )
+                        await bot.answerCallbackQuery(q.id)
+                        break
+                    }
+                    pendingCards = cards
+                    await bot.editMessageText(
+                        formatCardsPreview(cards),
+                        {
+                            chat_id: chatId,
+                            message_id: messageId,
+                            parse_mode: "HTML",
+                            reply_markup: {
+                                inline_keyboard: [[
+                                    {text: "Send to Anki", callback_data: "send_to_anki"},
+                                    {text: "Cancel", callback_data: "cancel_preview"}
+                                ]]
+                            }
+                        }
+                    )
+                    await bot.answerCallbackQuery(q.id)
+                } catch (err) {
+                    pendingCards = null
+                    if (err.code === "insufficient_quota") {
+                        await sendTempMessage(chatId, "OpenAI API quota exceeded. Check billing.")
+                    } else if (err.message === "INVALID_JSON_FROM_LLM") {
+                        await sendTempMessage(chatId, "Failed to parse AI response. Please try again.")
+                    } else {
+                        console.log(err)
+                    }
+                    await updateQueueMessage(chatId, true)
+                    await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
+                } finally {
+                    importInProgress = false
+                }
+                break
+
+            case "send_to_anki":
+                if (q.from.id !== ADMIN_ID) {
+                    await bot.answerCallbackQuery(q.id, {text: "Only the deck owner can import cards."})
+                    return
+                }
+                if (importInProgress) {
+                    await bot.answerCallbackQuery(q.id, {text: "Import already running"})
+                    return
+                }
+                if (!pendingCards) {
+                    await bot.answerCallbackQuery(q.id, {text: "Session expired — regenerate cards first"})
+                    await updateQueueMessage(chatId, true)
+                    return
+                }
+                importInProgress = true
                 await bot.editMessageText(
                     "Importing...",
-                    {
-                        chat_id: chatId,
-                        message_id: messageId
-                    }
+                    {chat_id: chatId, message_id: messageId, reply_markup: {inline_keyboard: []}}
                 )
-                await runImport(chatId)
+                try {
+                    const cards = pendingCards
+                    const audio = await mapLimit(cards, 5, c => downloadAudio(c.word))
+                    const notes = cards.map((c, i) => ({
+                        deckName: c.deck,
+                        modelName: MODEL,
+                        fields: {
+                            Word: c.word,
+                            Translation: c.translation,
+                            Example: c.example,
+                            Pronunciation: audio[i]
+                        },
+                        tags: c.tags
+                    }))
+                    await anki("addNotes", {notes})
+                    await addCachedWords(cards.map(c => normalize(c.word)))
+                    await clearQueue()
+                    pendingCards = null
+                    queueMessageId = null
+                    await bot.editMessageText(
+                        `Imported ${notes.length} card${notes.length !== 1 ? "s" : ""}`,
+                        {chat_id: chatId, message_id: messageId}
+                    )
+                    await bot.answerCallbackQuery(q.id)
+                } catch (err) {
+                    console.log(err)
+                    await updateQueueMessage(chatId, true)
+                    await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
+                } finally {
+                    importInProgress = false
+                }
+                break
+
+            case "cancel_preview":
+                pendingCards = null
                 await bot.answerCallbackQuery(q.id)
+                await updateQueueMessage(chatId, true)
                 break
 
             case "clear":
                 items = await getAll()
                 if (!items.length) {
-                    await bot.answerCallbackQuery(q.id, { text: "Queue is empty" })
+                    await bot.answerCallbackQuery(q.id, {text: "Queue is empty"})
                     return
                 }
                 await clearQueue()
-                queueMessageId = null
+                pendingCards = null
+                queueMessageId = messageId
                 await bot.editMessageText(
                     "Queue cleared",
                     {
                         chat_id: chatId,
                         message_id: messageId,
-                        reply_markup: {
-                            inline_keyboard: [[
-                                {text: "Import to Anki", callback_data: "import"},
-                                {text: "Clear queue", callback_data: "clear"}
-                            ]]
-                        }
+                        reply_markup: {inline_keyboard: []}
                     }
                 )
                 await bot.answerCallbackQuery(q.id, {text: "Queue cleared"})
@@ -394,6 +512,6 @@ bot.on("callback_query", async q => {
     } catch (err) {
         console.log(err)
         await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
-        await updateQueueMessage(q.message.chat.id, messageId.from.id === ADMIN_ID)
+        await updateQueueMessage(q.message.chat.id, q.from.id === ADMIN_ID)
     }
 })
