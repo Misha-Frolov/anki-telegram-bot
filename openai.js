@@ -37,23 +37,29 @@ export async function generateCards(rawText) {
             json_schema: {
                 name: "anki_cards",
                 schema: {
-                    type: "array",
-                    items: {
-                        type: "object",
-                        properties: {
-                            word: {type: "string"},
-                            translation: {type: "string"},
-                            example: {type: "string"},
-                            deck: {type: "string"},
-                            tags: {
-                                type: "array",
-                                items: {type: "string"},
-                                minItems: 2,
-                                maxItems: 2
+                    type: "object",
+                    properties: {
+                        cards: {
+                            type: "array",
+                            items: {
+                                type: "object",
+                                properties: {
+                                    word: {type: "string"},
+                                    translation: {type: "string"},
+                                    example: {type: "string"},
+                                    deck: {type: "string"},
+                                    tags: {
+                                        type: "array",
+                                        items: {type: "string"},
+                                        minItems: 2,
+                                        maxItems: 2
+                                    }
+                                },
+                                required: ["word", "translation", "example", "deck", "tags"]
                             }
-                        },
-                        required: ["word", "translation", "example", "deck", "tags"]
-                    }
+                        }
+                    },
+                    required: ["cards"]
                 }
             }
         },
@@ -68,7 +74,7 @@ export async function generateCards(rawText) {
     let json
 
     try {
-        json = JSON.parse(text)
+        json = JSON.parse(text).cards
     } catch {
         throw new Error("INVALID_JSON_FROM_LLM")
     }
