@@ -1,7 +1,7 @@
 import "dotenv/config"
 import TelegramBot from "node-telegram-bot-api"
 
-import {TELEGRAM_TOKEN, MODEL} from "./config.js"
+import {TELEGRAM_TOKEN, MODEL, ADMIN_ID} from "./config.js"
 import {addText, getAll, clearQueue} from "./queue.js"
 import {generateCards} from "./openai.js"
 import {anki} from "./anki.js"
@@ -12,6 +12,16 @@ const bot = new TelegramBot(
     TELEGRAM_TOKEN,
     {polling: true}
 )
+
+const AUTO_DELETE_MS = 3000
+async function sendTempMessage(chatId, text, options = {}) {
+    const msg = await bot.sendMessage(chatId, text, options)
+    setTimeout(() => {
+        bot.deleteMessage(chatId, msg.message_id)
+            .catch(() => {})
+    }, AUTO_DELETE_MS)
+    return msg
+}
 
 ensureAnkiCache().catch(console.error)
 
@@ -87,24 +97,25 @@ async function ensureAnkiCache() {
     }
 }
 
-async function updateQueueMessage(chatId) {
+async function updateQueueMessage(chatId, isAdmin = false) {
     const items = await getAll()
     if (!items.length) {
+        const text = "Queue is empty"
         if (queueMessageId) {
             try {
                 await bot.editMessageText(
-                    "Queue is empty",
+                    text,
                     {
                         chat_id: chatId,
                         message_id: queueMessageId,
-                        reply_markup: {inline_keyboard: []}
+                        reply_markup: { inline_keyboard: [] }
                     }
                 )
             } catch {
                 queueMessageId = null
             }
         } else {
-            const sent = await bot.sendMessage(chatId, "Queue is empty")
+            const sent = await bot.sendMessage(chatId, text)
             queueMessageId = sent.message_id
         }
         return
@@ -122,10 +133,12 @@ async function updateQueueMessage(chatId) {
     }
     const markup = {
         reply_markup: {
-            inline_keyboard: [[
-                {text: "Import to Anki", callback_data: "import"},
-                {text: "Clear queue", callback_data: "clear"}
-            ]]
+            inline_keyboard: isAdmin
+                ? [[
+                    {text: "Import to Anki", callback_data: "import"},
+                    {text: "Clear queue", callback_data: "clear"}
+                ]]
+                : []
         }
     }
     if (queueMessageId) {
@@ -148,6 +161,11 @@ async function updateQueueMessage(chatId) {
 }
 
 bot.on("message", async msg => {
+    setTimeout(() => {
+        bot.deleteMessage(msg.chat.id, msg.message_id)
+            .catch(() => {})
+    }, AUTO_DELETE_MS)
+
     const text = msg.text?.trim()
     if (!text) return
     if (text.startsWith("/")) return
@@ -162,12 +180,7 @@ bot.on("message", async msg => {
     for (const p of parts) {
         const n = normalize(p)
         if (existing.has(n)) {
-            const warn = await bot.sendMessage(msg.chat.id, `"${p}" already in queue`)
-            setTimeout(() => {
-                bot.deleteMessage(msg.chat.id, warn.message_id)
-                    .catch(() => {
-                    })
-            }, 3000)
+            await sendTempMessage(msg.chat.id, `"${p}" already in queue`)
             continue
         }
 
@@ -177,7 +190,7 @@ bot.on("message", async msg => {
     }
 
     if (added) {
-        await updateQueueMessage(msg.chat.id)
+        await updateQueueMessage(msg.chat.id, msg.from.id === ADMIN_ID)
     }
 })
 
@@ -190,9 +203,8 @@ bot.on("message", async msg => {
  * @property {string[]} tags
  */
 async function runImport(chatId) {
-
     if (importInProgress) {
-        await bot.sendMessage(chatId, "Import already in progress")
+        await sendTempMessage(chatId, "Import already in progress")
         return
     }
 
@@ -206,7 +218,7 @@ async function runImport(chatId) {
         const missing = texts.filter(t => !existing.has(normalize(t)))
 
         if (!missing.length) {
-            await bot.sendMessage(chatId, "All words already exist in Anki")
+            await sendTempMessage(chatId, "All words already exist in Anki")
             await clearQueue()
             queueMessageId = null
             return
@@ -220,7 +232,7 @@ async function runImport(chatId) {
         }
 
         if (!cards.length) {
-            await bot.sendMessage(chatId, "No vocabulary detected")
+            await sendTempMessage(chatId, "No vocabulary detected")
             return
         }
         const audio = await mapLimit(cards, 5, c => downloadAudio(c.word))
@@ -242,15 +254,15 @@ async function runImport(chatId) {
         await clearQueue()
         queueMessageId = null
 
-        await bot.sendMessage(chatId, `Imported ${notes.length} cards`)
+        await sendTempMessage(chatId, `Imported ${notes.length} cards`)
     } catch (err) {
         if (err.code === "insufficient_quota") {
-            await bot.sendMessage(chatId, "OpenAI API quota exceeded. Check billing.")
+            await sendTempMessage(chatId, "OpenAI API quota exceeded. Check billing.")
             await updateQueueMessage(chatId)
             return
         }
         if (err.message === "INVALID_JSON_FROM_LLM") {
-            await bot.sendMessage(chatId, "Failed to parse AI response. Please try again.")
+            await sendTempMessage(chatId, "Failed to parse AI response. Please try again.")
             await updateQueueMessage(chatId)
             return
         }
@@ -262,6 +274,14 @@ async function runImport(chatId) {
 }
 
 bot.onText(/\/import/, async msg => {
+    if (msg.from.id !== ADMIN_ID) {
+        await sendTempMessage(msg.chat.id, "Only the deck owner can import cards.")
+        return
+    }
+    const items = await getAll()
+    if (!items.length) {
+        return
+    }
     try {
         await runImport(msg.chat.id)
     } catch (err) {
@@ -270,19 +290,23 @@ bot.onText(/\/import/, async msg => {
 })
 
 bot.onText(/\/start/, async msg => {
-    await bot.sendMessage(msg.chat.id, "Send words or phrases")
-    await updateQueueMessage(msg.chat.id)
+    await sendTempMessage(msg.chat.id, "Send words or phrases")
+    await updateQueueMessage(msg.chat.id, msg.from.id === ADMIN_ID)
 })
 
 bot.onText(/\/resync/, async msg => {
+    if (msg.from.id !== ADMIN_ID) {
+        await sendTempMessage(msg.chat.id, "Only the deck owner can initiate a resync.")
+        return
+    }
     try {
-        await bot.sendMessage(msg.chat.id, "Rebuilding Anki cache...")
+        await sendTempMessage(msg.chat.id, "Rebuilding Anki cache...")
         const ids = await anki(
             "findNotes",
             {query: "Word:*"}
         )
         if (!ids.length) {
-            await bot.sendMessage(msg.chat.id, "No cards found in Anki")
+            await sendTempMessage(msg.chat.id, "No cards found in Anki")
             return
         }
         const notes = await anki(
@@ -292,30 +316,44 @@ bot.onText(/\/resync/, async msg => {
         const words = notes.map(n => normalize(n.fields.Word.value))
         await clearAnkiCache()
         await addCachedWords(words)
-        await bot.sendMessage(msg.chat.id, `Cache rebuilt: ${words.length} words`)
+        await sendTempMessage(msg.chat.id, `Cache rebuilt: ${words.length} words`)
     } catch (err) {
         console.log(err)
-        await bot.sendMessage(msg.chat.id, "Failed to rebuild cache")
+        await sendTempMessage(msg.chat.id, "Failed to rebuild cache")
     }
 })
 
 bot.onText(/\/clear/, async msg => {
+    const items = await getAll()
+    if (!items.length) {
+        return
+    }
     await clearQueue()
     queueMessageId = null
-    await updateQueueMessage(msg.chat.id)
+    await updateQueueMessage(msg.chat.id, msg.from.id === ADMIN_ID)
 })
 
 bot.on("callback_query", async q => {
 
     const chatId = q.message.chat.id
     const messageId = q.message.message_id
+    let items
 
     try {
         switch (q.data) {
 
             case "import":
+                if (q.from.id !== ADMIN_ID) {
+                    await bot.answerCallbackQuery(q.id, { text: "Only the deck owner can import cards." })
+                    return
+                }
                 if (importInProgress) {
                     await bot.answerCallbackQuery(q.id, {text: "Import already running"})
+                    return
+                }
+                items = await getAll()
+                if (!items.length) {
+                    await bot.answerCallbackQuery(q.id, { text: "Queue is empty" })
                     return
                 }
                 await bot.editMessageText(
@@ -330,6 +368,11 @@ bot.on("callback_query", async q => {
                 break
 
             case "clear":
+                items = await getAll()
+                if (!items.length) {
+                    await bot.answerCallbackQuery(q.id, { text: "Queue is empty" })
+                    return
+                }
                 await clearQueue()
                 queueMessageId = null
                 await bot.editMessageText(
@@ -351,6 +394,6 @@ bot.on("callback_query", async q => {
     } catch (err) {
         console.log(err)
         await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
-        await updateQueueMessage(q.message.chat.id)
+        await updateQueueMessage(q.message.chat.id, messageId.from.id === ADMIN_ID)
     }
 })

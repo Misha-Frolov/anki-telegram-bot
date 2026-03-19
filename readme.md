@@ -51,6 +51,7 @@ Create a `.env` file in the project root:
 ```
 TELEGRAM_TOKEN=your_telegram_bot_token
 OPENAI_API_KEY=your_openai_api_key
+TELEGRAM_ADMIN_ID=your_telegram_id
 ```
 
 ## Run the bot

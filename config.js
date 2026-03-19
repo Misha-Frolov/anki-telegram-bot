@@ -1,5 +1,6 @@
 export const TELEGRAM_TOKEN = process.env.TELEGRAM_TOKEN
 export const OPENAI_KEY = process.env.OPENAI_API_KEY
+export const ADMIN_ID = Number(process.env.TELEGRAM_ADMIN_ID)
 
 export const ANKI_URL = "http://localhost:8765"
 
