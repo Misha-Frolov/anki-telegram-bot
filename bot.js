@@ -270,6 +270,11 @@ async function runImport(chatId) {
             await updateQueueMessage(chatId)
             return
         }
+        if (err.message?.startsWith("INVALID_DECK_FROM_LLM")) {
+            await sendTempMessage(chatId, "AI returned an unknown deck. Please try again.")
+            await updateQueueMessage(chatId)
+            return
+        }
         console.log(err)
         await updateQueueMessage(chatId)
     } finally {
@@ -424,6 +429,8 @@ bot.on("callback_query", async q => {
                         await sendTempMessage(chatId, "OpenAI API quota exceeded. Check billing.")
                     } else if (err.message === "INVALID_JSON_FROM_LLM") {
                         await sendTempMessage(chatId, "Failed to parse AI response. Please try again.")
+                    } else if (err.message?.startsWith("INVALID_DECK_FROM_LLM")) {
+                        await sendTempMessage(chatId, "AI returned an unknown deck. Please try again.")
                     } else {
                         console.log(err)
                     }

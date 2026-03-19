@@ -3,21 +3,25 @@ import {OPENAI_KEY} from "./config.js"
 
 const openai = new OpenAI({apiKey: OPENAI_KEY})
 
+const DECKS = new Set([
+    "Health & Body",
+    "Home & Daily Life",
+    "Travel & Transport",
+    "Food & Cooking",
+    "Clothes & Appearance",
+    "Nature & Environment",
+    "Work & Career",
+    "Personality & Emotions",
+    "Objects & Concepts",
+])
+
 const SYSTEM_PROMPT = `
 Generate Anki card JSON for English vocabulary.
 
 Keep phrases intact. Do not split phrases into words.
 
 Deck must be one of:
-Health & Body
-Home & Daily Life
-Travel & Transport
-Food & Cooking
-Clothes & Appearance
-Nature & Environment
-Work & Career
-Personality & Emotions
-Objects & Concepts
+${[...DECKS].join("\n")}
 
 Tags:
 level∷A1/A2/B1/B2/C1
@@ -67,6 +71,11 @@ export async function generateCards(rawText) {
         json = JSON.parse(text)
     } catch {
         throw new Error("INVALID_JSON_FROM_LLM")
+    }
+
+    const invalid = json.find(c => !DECKS.has(c.deck))
+    if (invalid) {
+        throw new Error(`INVALID_DECK_FROM_LLM: ${invalid.deck}`)
     }
 
     return json
