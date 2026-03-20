@@ -417,9 +417,14 @@ bot.on("callback_query", async q => {
                     )
                     await bot.answerCallbackQuery(q.id)
                 } catch (err) {
-                    console.log(err)
+                    if (err.code === "ECONNREFUSED") {
+                        await sendTempMessage(chatId, "Anki is not running. Start Anki and try again.")
+                    } else {
+                        console.log(err)
+                        await sendTempMessage(chatId, "Import failed. Please try again.")
+                    }
                     await updateQueueMessage(chatId, true)
-                    await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
+                    await bot.answerCallbackQuery(q.id)
                 } finally {
                     importInProgress = false
                 }
