@@ -5,8 +5,7 @@
   "description": "Telegram bot that converts vocabulary into Anki cards using OpenAI",
   "main": "bot.js",
   "scripts": {
-    "start": "node bot.js",
-    "start20": "C:/Users/1/AppData/Local/nvm/v20.20.1/node.exe bot.js"
+    "start": "node bot.js"
   },
   "engines": {
     "node": ">=18"
