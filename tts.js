@@ -1,5 +1,4 @@
 import fetch from "node-fetch"
-import { Buffer } from "buffer"
 import { anki } from "./anki.js"
 
 export async function downloadAudio(word){
