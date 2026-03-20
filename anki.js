@@ -31,21 +31,3 @@ export async function anki(action, params = {}, retries = 3) {
         return anki(action, params, retries - 1)
     }
 }
-
-export async function getExistingWords(){
-
-    const ids = await anki("findNotes",{query:"Word:*"})
-    if(!ids.length) return new Set()
-    const notes = await anki("notesInfo",{notes:ids})
-    const set = new Set()
-
-    for(const n of notes){
-        set.add(
-            n.fields.Word.value
-                .trim()
-                .toLowerCase()
-        )
-    }
-
-    return set
-}

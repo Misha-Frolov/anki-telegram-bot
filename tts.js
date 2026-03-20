@@ -18,8 +18,8 @@ export async function downloadAudio(word){
         await res.arrayBuffer()
     )
 
-    const filename =
-        `tts-${word}-${Date.now()}.mp3`
+    const slug = word.toLowerCase().replace(/[^a-z0-9]+/g, "-").slice(0, 40)
+    const filename = `tts-${slug}-${Date.now()}.mp3`
 
     await anki("storeMediaFile",{
         filename,

@@ -2,7 +2,7 @@ import "dotenv/config"
 import TelegramBot from "node-telegram-bot-api"
 
 import {TELEGRAM_TOKEN, MODEL, ADMIN_ID} from "./config.js"
-import {addText, getAll, clearQueue} from "./queue.js"
+import {addText, getAll, clearQueue} from "./db.js"
 import {generateCards} from "./openai.js"
 import {anki} from "./anki.js"
 import {getCachedWords, addCachedWords, clearAnkiCache, getLLMCache, setLLMCache, getSetting, setSetting, addTokenUsage, getTokenUsage} from "./db.js"

@@ -92,7 +92,7 @@ export function getCachedWords() {
             "SELECT word FROM anki_words",
             (err, rows) => {
                 if (err) reject(err)
-                resolve(new Set(rows.map(r => r.word)))
+                else resolve(new Set(rows.map(r => r.word)))
             }
         )
     })
@@ -127,33 +127,27 @@ export function addCachedWords(words) {
 }
 
 export function getLLMCache(input) {
-    return new Promise((resolve,reject)=>{
+    return new Promise((resolve, reject) => {
         db.get(
             "SELECT output FROM llm_cache WHERE input=?",
             [input],
-            (err,row)=>{
-                if(err) reject(err)
-                if(!row) {
-                    resolve(null)
-                    return
-                }
-                resolve(JSON.parse(row.output))
+            (err, row) => {
+                if (err) reject(err)
+                else if (!row) resolve(null)
+                else resolve(JSON.parse(row.output))
             }
         )
     })
 }
 
-export function setLLMCache(input,output){
-    return new Promise((resolve,reject)=>{
+export function setLLMCache(input, output) {
+    return new Promise((resolve, reject) => {
         db.run(
             "INSERT OR REPLACE INTO llm_cache(input,output) VALUES(?,?)",
-            [input,JSON.stringify(output)],
+            [input, JSON.stringify(output)],
             err => {
-                if(err) {
-                    reject(err)
-                    return
-                }
-                resolve()
+                if (err) reject(err)
+                else resolve()
             }
         )
     })
