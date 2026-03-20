@@ -419,11 +419,25 @@ bot.on("callback_query", async q => {
                 } catch (err) {
                     if (err.code === "ECONNREFUSED") {
                         await sendTempMessage(chatId, "Anki is not running. Start Anki and try again.")
+                        await bot.editMessageText(
+                            formatCardsPreview(pendingCards),
+                            {
+                                chat_id: chatId,
+                                message_id: messageId,
+                                parse_mode: "HTML",
+                                reply_markup: {
+                                    inline_keyboard: [[
+                                        {text: "Send to Anki", callback_data: "send_to_anki"},
+                                        {text: "Cancel", callback_data: "cancel_preview"}
+                                    ]]
+                                }
+                            }
+                        ).catch(() => {})
                     } else {
                         console.log(err)
                         await sendTempMessage(chatId, "Import failed. Please try again.")
+                        await updateQueueMessage(chatId, true)
                     }
-                    await updateQueueMessage(chatId, true)
                     await bot.answerCallbackQuery(q.id)
                 } finally {
                     importInProgress = false
