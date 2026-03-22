@@ -10,8 +10,9 @@ to Anki, other users export a CSV file compatible with Quizlet and other apps.
 * Translates and generates example sentences via OpenAI (gpt-4.1-mini) or Google Translate
 * Any language → Russian translation
 * Admin: preview cards → import to Anki with pronunciation audio (Google TTS)
-* Users: preview cards → export CSV or plain text for Quizlet, Anki, etc.
-* Deduplication against the queue and existing Anki cards (admin)
+* Users: preview cards → export CSV or Quizlet-compatible text
+* Deduplication against the queue and existing Anki cards (admin, checked at input and at generate)
+* Invalid words filtered before translation (GPT prompt instruction; Free Dictionary API / Wiktionary for Google Translate)
 * LLM results cached in SQLite to avoid redundant API calls
 * Per-user token usage and cost tracking (`/stats`, admin only)
 
@@ -34,21 +35,21 @@ to Anki, other users export a CSV file compatible with Quizlet and other apps.
 
 ### User
 
-1. Set your language once: `/lang Turkish` (default: English).
+1. On first `/start`, choose your language from the picker (or type it via **Other →**).
 2. Send words or phrases.
 3. Press **Generate flashcards**.
-4. Press **Get CSV** or **Get text** (can press both).
+4. Press **Get CSV** or **For Quizlet** (can press both).
 5. Press **Done** when finished — the preview stays in chat as a record.
 
 ## Commands
 
-| Command            | Who   | Description                                    |
-|--------------------|-------|------------------------------------------------|
-| `/start`           | All   | Show the queue message                         |
-| `/clear`           | All   | Clear your own queue                           |
-| `/lang [language]` | All   | Set translation language, e.g. `/lang Turkish` |
-| `/stats`           | Admin | Per-user token usage and estimated cost        |
-| `/resync`          | Admin | Rebuild the local Anki word cache              |
+| Command            | Who        | Description                                    |
+|--------------------|------------|------------------------------------------------|
+| `/start`           | All        | Show the queue message                         |
+| `/clear`           | All        | Clear your own queue                           |
+| `/lang [language]` | Users only | Set translation language, e.g. `/lang Turkish` |
+| `/stats`           | Admin      | Per-user token usage and estimated cost        |
+| `/resync`          | Admin      | Rebuild the local Anki word cache              |
 
 ## Requirements
 
@@ -101,10 +102,13 @@ Work & Career, Personality & Emotions, Objects & Concepts
 
 Tags: `level∷A1/A2/B1/B2/C1` and `pos∷noun/verb/adjective/adverb/phrase/phrasal_verb`
 
-## CSV format (users)
+## Export formats (users)
 
-Tab-separated with Anki-compatible header (`#separator:tab`). Importable into Quizlet, Anki, Excel, and most flashcard
-apps.
+**CSV** (`Get CSV`): tab-separated with Anki-compatible header (`#separator:tab`). Importable into Anki, Excel, and most flashcard apps.
+
+**Quizlet text** (`For Quizlet`): `word;translation` per line. 
+In Quizlet Import set separator *Between term and definition* to `;` (semicolon) and *Between cards* to *New line*.
+The bot sends a 📋 Copy button for convenience.
 
 ## Project structure
 
