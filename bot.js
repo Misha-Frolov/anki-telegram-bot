@@ -1,5 +1,6 @@
 import "dotenv/config"
 import TelegramBot from "node-telegram-bot-api"
+import {appendFileSync} from "fs"
 
 import {TELEGRAM_TOKEN, MODEL, ADMIN_ID, TEACHER_IDS, TRANSLATE_ENGINE} from "./config.js"
 import {
@@ -17,6 +18,31 @@ import {translateWords} from "./translate.js"
 import {generateCSV, generateText} from "./csv.js"
 import {anki} from "./anki.js"
 import {downloadAudio} from "./tts.js"
+
+function logError(context, err) {
+    const ts = new Date().toISOString()
+    const text = `[${ts}] [${context}] ${err?.stack || err}\n`
+    try { appendFileSync("errors.log", text) } catch {}
+    console.error(text.trim())
+}
+
+const LANGUAGES = [
+    "Afrikaans", "Albanian", "Amharic", "Arabic", "Armenian", "Azerbaijani",
+    "Basque", "Belarusian", "Bengali", "Bosnian", "Bulgarian", "Catalan",
+    "Cebuano", "Chinese", "Croatian", "Czech", "Danish", "Dutch",
+    "English", "Esperanto", "Estonian", "Filipino", "Finnish", "French",
+    "Galician", "Georgian", "German", "Greek", "Gujarati", "Haitian Creole",
+    "Hausa", "Hebrew", "Hindi", "Hungarian", "Icelandic", "Igbo",
+    "Indonesian", "Irish", "Italian", "Japanese", "Javanese", "Kannada",
+    "Kazakh", "Khmer", "Korean", "Kurdish", "Kyrgyz", "Lao",
+    "Latin", "Latvian", "Lithuanian", "Macedonian", "Malagasy", "Malay",
+    "Malayalam", "Maltese", "Maori", "Marathi", "Mongolian", "Myanmar",
+    "Nepali", "Norwegian", "Pashto", "Persian", "Polish", "Portuguese",
+    "Punjabi", "Romanian", "Samoan", "Serbian", "Sinhala",
+    "Slovak", "Slovenian", "Somali", "Spanish", "Swahili", "Swedish",
+    "Tajik", "Tamil", "Telugu", "Thai", "Turkish", "Turkmen",
+    "Ukrainian", "Urdu", "Uzbek", "Vietnamese", "Welsh", "Yoruba", "Zulu",
+]
 
 const bot = new TelegramBot(
     TELEGRAM_TOKEN,
@@ -39,14 +65,78 @@ bot.setMyCommands([
     {command: "start", description: "Start bot"},
     {command: "clear", description: "Clear queue"},
     {command: "lang", description: "Set language, e.g. /lang Turkish"},
-    {command: "resync", description: "Rebuild Anki cache"},
-    {command: "stats", description: "Show token usage and cost"},
 ]).catch(console.error)
 
+bot.setMyCommands([
+    {command: "start", description: "Start bot"},
+    {command: "clear", description: "Clear queue"},
+    {command: "stats", description: "Show token usage and cost"},
+    {command: "resync", description: "Rebuild Anki cache"},
+], {scope: {type: "chat", chat_id: ADMIN_ID}}).catch(console.error)
+
 // Per-user in-memory state
-const queueMessageIds = new Map()  // userId → messageId
-const importInProgress = new Set() // userId
-const pendingCards = new Map()     // userId → cards[]
+const queueMessageIds = new Map()    // userId → messageId
+const importInProgress = new Set()   // userId
+const pendingCards = new Map()       // userId → cards[]
+const pendingSkipped = new Map()     // userId → string[]
+const startMessageIds = new Map()          // userId → messageId
+const langPickerMessageIds = new Map()     // userId → messageId
+const quizletInstructionIds = new Map()    // userId → messageId
+const awaitingLangInput = new Map()        // userId → {promptMsgId, onboarding}
+
+const PICKER_LANGUAGES = [
+    ["English", "Spanish", "French", "German"],
+    ["Italian", "Portuguese", "Turkish", "Arabic"],
+    ["Chinese", "Japanese", "Korean", "Hindi"],
+    ["Polish", "Ukrainian", "Indonesian", "Other →"],
+]
+
+async function sendLanguagePicker(chatId, userId) {
+    const keyboard = PICKER_LANGUAGES.map(row =>
+        row.map(lang => ({text: lang, callback_data: `lang_pick:${lang}`}))
+    )
+    const sent = await bot.sendMessage(chatId, "Choose your language:", {
+        reply_markup: {inline_keyboard: keyboard}
+    })
+    langPickerMessageIds.set(userId, sent.message_id)
+}
+
+async function sendStartMessage(chatId, userId) {
+    const isAdmin = userId === ADMIN_ID
+    const lang = await getUserSetting(userId, "lang").catch(() => null) || "English"
+    const text = isAdmin
+        ? "Send words or phrases"
+        : `Send words or phrases in ${lang} or change language: /lang <language>`
+    const sent = await bot.sendMessage(chatId, text)
+    startMessageIds.set(userId, sent.message_id)
+}
+
+// Returns true if language was saved successfully
+async function trySetLanguage(chatId, userId, raw) {
+    const normalized = raw.replace(/\b\w/g, c => c.toUpperCase())
+
+    if (LANGUAGES.includes(normalized)) {
+        await setUserSetting(userId, "lang", normalized)
+        await sendTempMessage(chatId, `Language set to ${normalized} ✓`)
+        return true
+    }
+
+    const lower = normalized.toLowerCase()
+    const matches = LANGUAGES.filter(l => l.toLowerCase().startsWith(lower))
+
+    if (matches.length === 1) {
+        await setUserSetting(userId, "lang", matches[0])
+        await sendTempMessage(chatId, `Language set to ${matches[0]} ✓`)
+        return true
+    }
+    if (matches.length > 1) {
+        await sendTempMessage(chatId, `Multiple matches: ${matches.join(", ")}`)
+        return false
+    }
+
+    await sendTempMessage(chatId, `Unknown language: "${raw}". Please enter a valid language name.`)
+    return false
+}
 
 // Restore admin's queue message ID from DB on startup
 getUserSetting(ADMIN_ID, "queue_message_id").then(val => {
@@ -119,8 +209,7 @@ async function ensureAnkiCache() {
         await addCachedWords(words)
         console.log(`Cached ${words.length} words`)
     } catch (err) {
-        console.log("Anki cache init failed")
-        console.error(err)
+        logError("ensureAnkiCache", err)
     }
 }
 
@@ -162,7 +251,7 @@ async function updateQueueMessage(chatId, userId) {
     const limit = 5
     const preview = items
         .slice(0, limit)
-        .map((w, i) => `${i + 1}. ${w.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")}`)
+        .map((w, i) => `${i + 1}. ${escapeHtml(w)}`)
         .join("\n")
     let message = `Queued words: ${items.length}\n\n${preview}`
     if (items.length > limit) {
@@ -200,24 +289,32 @@ async function updateQueueMessage(chatId, userId) {
     setQueueMessageId(userId, sent.message_id)
 }
 
-function formatCardsPreview(cards) {
+function escapeHtml(s) {
+    return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+}
+
+function formatCardsPreview(cards, skipped = []) {
     const lines = cards.map(c => {
-        let line = `<b>${c.word}</b> — ${c.translation}\n<i>${c.example}</i>`
+        let line = `<b>${escapeHtml(c.word)}</b> — ${escapeHtml(c.translation)}`
+        if (c.example) line += `\n<i>${escapeHtml(c.example)}</i>`
         if (c.deck) line += `\n${c.deck}  ${c.tags?.join("  ") || ""}`
         return line
     })
-    return `Generated ${cards.length} card${cards.length !== 1 ? "s" : ""}:\n\n` + lines.join("\n\n")
+    const sep = cards.some(c => c.example) ? "\n\n" : "\n"
+    let text = `Generated ${cards.length} card${cards.length !== 1 ? "s" : ""}:\n\n` + lines.join(sep)
+    if (skipped.length) {
+        text += `\n\n<i>Skipped (${skipped.length}): ${skipped.map(escapeHtml).join(", ")}</i>`
+    }
+    return text
 }
 
 bot.on("message", async msg => {
-    setTimeout(() => {
-        bot.deleteMessage(msg.chat.id, msg.message_id)
-            .catch(() => {})
-    }, AUTO_DELETE_MS)
-
     const text = msg.text?.trim()
-    if (!text) return
-    if (text.startsWith("/")) return
+
+    if (!text || text.startsWith("/")) {
+        setTimeout(() => bot.deleteMessage(msg.chat.id, msg.message_id).catch(() => {}), AUTO_DELETE_MS)
+        return
+    }
 
     const userId = msg.from.id
     const chatId = msg.chat.id
@@ -225,6 +322,24 @@ bot.on("message", async msg => {
     // Store display name for stats (fire-and-forget)
     const name = [msg.from.first_name, msg.from.last_name].filter(Boolean).join(" ")
     if (name) setUserSetting(userId, "name", name).catch(() => {})
+
+    // Awaiting language input (from picker "Other →" or /lang without args)
+    if (awaitingLangInput.has(userId)) {
+        const {promptMsgId, onboarding} = awaitingLangInput.get(userId)
+        awaitingLangInput.delete(userId)
+        bot.deleteMessage(chatId, promptMsgId).catch(() => {})
+        bot.deleteMessage(chatId, msg.message_id).catch(() => {})
+        const ok = await trySetLanguage(chatId, userId, text)
+        if (onboarding) {
+            if (ok) {
+                await sendStartMessage(chatId, userId)
+                await updateQueueMessage(chatId, userId)
+            } else {
+                await sendLanguagePicker(chatId, userId)
+            }
+        }
+        return
+    }
 
     const isTeacher = TEACHER_IDS.includes(userId)
     const targetUserId = isTeacher ? ADMIN_ID : userId
@@ -235,32 +350,64 @@ bot.on("message", async msg => {
         (await getAll(targetUserId)).map(normalize)
     )
 
+    let ankiWords = new Set()
+    if (targetUserId === ADMIN_ID) {
+        try { ankiWords = await getCachedWords() } catch {}
+    }
+
     let added = 0
+    const skippedAnki = []
     for (const p of parts) {
         const n = normalize(p)
         if (existing.has(n)) {
             if (!isTeacher) await sendTempMessage(chatId, `"${p}" already in queue`)
             continue
         }
-
+        if (ankiWords.has(n)) {
+            skippedAnki.push(p)
+            continue
+        }
         await addText(targetUserId, p)
         existing.add(n)
         added++
     }
 
-    if (added) {
+    if (skippedAnki.length) {
+        const words = skippedAnki.map(w => `"${w}"`).join(", ")
+        await sendTempMessage(chatId, `Already in Anki: ${words}`)
+    }
+
+    if (added > 0) {
+        const startMsgId = startMessageIds.get(userId)
+        if (startMsgId) {
+            bot.deleteMessage(chatId, startMsgId).catch(() => {})
+            startMessageIds.delete(userId)
+        }
+        bot.deleteMessage(chatId, msg.message_id).catch(() => {})
         if (isTeacher) {
             await sendTempMessage(chatId, `Added to queue ✓`)
         } else {
             await updateQueueMessage(chatId, userId)
         }
+    } else {
+        setTimeout(() => bot.deleteMessage(chatId, msg.message_id).catch(() => {}), AUTO_DELETE_MS)
     }
 })
 
 
 bot.onText(/\/start/, async msg => {
-    await sendTempMessage(msg.chat.id, "Send words or phrases")
-    await updateQueueMessage(msg.chat.id, msg.from.id)
+    const userId = msg.from.id
+    const isAdmin = userId === ADMIN_ID
+    const isTeacher = TEACHER_IDS.includes(userId)
+    if (!isAdmin && !isTeacher) {
+        const lang = await getUserSetting(userId, "lang").catch(() => null)
+        if (!lang) {
+            await sendLanguagePicker(msg.chat.id, userId)
+            return
+        }
+    }
+    await sendStartMessage(msg.chat.id, userId)
+    await updateQueueMessage(msg.chat.id, userId)
 })
 
 bot.onText(/\/resync/, async msg => {
@@ -287,7 +434,7 @@ bot.onText(/\/resync/, async msg => {
         await addCachedWords(words)
         await sendTempMessage(msg.chat.id, `Cache rebuilt: ${words.length} words`)
     } catch (err) {
-        console.log(err)
+        logError("resync", err)
         await sendTempMessage(msg.chat.id, "Failed to rebuild cache")
     }
 })
@@ -343,15 +490,19 @@ bot.onText(/\/clear/, async msg => {
 
 bot.onText(/\/lang/, async msg => {
     const userId = msg.from.id
+    if (userId === ADMIN_ID) return
     const match = msg.text.match(/^\/lang\s+(.+)$/)
     if (!match) {
         const current = await getUserSetting(userId, "lang") || "English"
-        await sendTempMessage(msg.chat.id, `Current language: ${current}\nUse /lang <language> to change, e.g. /lang Turkish`)
+        const prompt = await bot.sendMessage(msg.chat.id,
+            `Current language: ${current}\nType a new language name:`,
+            {reply_markup: {force_reply: true, input_field_placeholder: "e.g. Turkish, French, Arabic"}}
+        )
+        awaitingLangInput.set(userId, {promptMsgId: prompt.message_id, onboarding: false})
         return
     }
-    const lang = match[1].trim()
-    await setUserSetting(userId, "lang", lang)
-    await sendTempMessage(msg.chat.id, `Language set to ${lang} ✓`)
+
+    await trySetLanguage(msg.chat.id, userId, match[1].trim())
 })
 
 bot.on("callback_query", async q => {
@@ -360,6 +511,44 @@ bot.on("callback_query", async q => {
     const messageId = q.message.message_id
     const userId = q.from.id
     let items
+
+    // Quizlet instruction dismiss — handle before the outdated-message guard
+    if (q.data === "done_quizlet") {
+        await bot.deleteMessage(chatId, messageId).catch(() => {})
+        quizletInstructionIds.delete(userId)
+        const previewMsgId = queueMessageIds.get(userId)
+        if (previewMsgId) {
+            await bot.editMessageReplyMarkup(
+                {inline_keyboard: []},
+                {chat_id: chatId, message_id: previewMsgId}
+            ).catch(() => {})
+        }
+        pendingCards.delete(userId)
+        pendingSkipped.delete(userId)
+        await clearQueue(userId)
+        setQueueMessageId(userId, null)
+        await bot.answerCallbackQuery(q.id)
+        return
+    }
+
+    // Language picker — handle before the outdated-message guard
+    if (q.data.startsWith("lang_pick:")) {
+        const raw = q.data.slice("lang_pick:".length)
+        await bot.deleteMessage(chatId, messageId).catch(() => {})
+        langPickerMessageIds.delete(userId)
+        await bot.answerCallbackQuery(q.id)
+        if (raw === "Other →") {
+            const prompt = await bot.sendMessage(chatId, "Type your language name:", {
+                reply_markup: {force_reply: true, input_field_placeholder: "e.g. Arabic, Hindi, Swedish"}
+            })
+            awaitingLangInput.set(userId, {promptMsgId: prompt.message_id, onboarding: true})
+            return
+        }
+        await setUserSetting(userId, "lang", raw)
+        await sendStartMessage(chatId, userId)
+        await updateQueueMessage(chatId, userId)
+        return
+    }
 
     const userQueueMsgId = queueMessageIds.get(userId)
     if (userQueueMsgId && messageId !== userQueueMsgId) {
@@ -390,6 +579,7 @@ bot.on("callback_query", async q => {
                     let cards
                     const isAdmin = userId === ADMIN_ID
 
+                    let inputWords
                     if (isAdmin) {
                         const existing = await getCachedWords()
                         const missing = items.filter(t => !existing.has(normalize(t)))
@@ -397,6 +587,7 @@ bot.on("callback_query", async q => {
                             await clearQueue(userId)
                             setQueueMessageId(userId, null)
                             pendingCards.delete(userId)
+                            pendingSkipped.delete(userId)
                             await bot.editMessageText(
                                 "All words already exist in Anki",
                                 {chat_id: chatId, message_id: messageId, reply_markup: {inline_keyboard: []}}
@@ -404,6 +595,7 @@ bot.on("callback_query", async q => {
                             await bot.answerCallbackQuery(q.id)
                             break
                         }
+                        inputWords = missing
                         const raw = missing.join("\n")
                         const language = "English"
                         cards = await getLLMCache(raw, language)
@@ -414,6 +606,7 @@ bot.on("callback_query", async q => {
                             await addTokenUsage(result.usage.prompt_tokens, result.usage.completion_tokens, userId).catch(console.error)
                         }
                     } else {
+                        inputWords = items
                         const language = await getUserSetting(userId, "lang") || "English"
                         const raw = items.join("\n")
                         const useGPT = TRANSLATE_ENGINE !== "google"
@@ -437,8 +630,12 @@ bot.on("callback_query", async q => {
                         }
                     }
 
+                    const cardWords = new Set(cards.map(c => normalize(c.word)))
+                    const skipped = inputWords.filter(w => !cardWords.has(normalize(w)))
+
                     if (!cards.length) {
                         pendingCards.delete(userId)
+                        pendingSkipped.delete(userId)
                         await bot.editMessageText(
                             "No vocabulary detected",
                             {chat_id: chatId, message_id: messageId, reply_markup: {inline_keyboard: []}}
@@ -448,15 +645,16 @@ bot.on("callback_query", async q => {
                     }
 
                     pendingCards.set(userId, cards)
+                    pendingSkipped.set(userId, skipped)
                     const isAdminUser = userId === ADMIN_ID
                     const actionButtons = isAdminUser
                         ? [{text: "Send to Anki", callback_data: "send_to_anki"}]
                         : [
                             {text: "Get CSV", callback_data: "get_csv"},
-                            {text: "Get text", callback_data: "get_text"}
+                            {text: "For Quizlet", callback_data: "get_text"}
                           ]
                     await bot.editMessageText(
-                        formatCardsPreview(cards),
+                        formatCardsPreview(cards, skipped),
                         {
                             chat_id: chatId,
                             message_id: messageId,
@@ -479,7 +677,7 @@ bot.on("callback_query", async q => {
                     } else if (err.message?.startsWith("INVALID_DECK_FROM_LLM")) {
                         await sendTempMessage(chatId, "AI returned an unknown deck. Please try again.")
                     } else {
-                        console.log(err)
+                        logError("generate", err)
                     }
                     await updateQueueMessage(chatId, userId)
                     await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
@@ -525,6 +723,7 @@ bot.on("callback_query", async q => {
                     await addCachedWords(cards.map(c => normalize(c.word)))
                     await clearQueue(userId)
                     pendingCards.delete(userId)
+                    pendingSkipped.delete(userId)
                     setQueueMessageId(userId, null)
                     await bot.editMessageText(
                         `Imported ${notes.length} card${notes.length !== 1 ? "s" : ""}:\n\n${cards.map(c => c.word).join("\n")}`,
@@ -537,7 +736,7 @@ bot.on("callback_query", async q => {
                         const cards = pendingCards.get(userId)
                         if (cards) {
                             await bot.editMessageText(
-                                formatCardsPreview(cards),
+                                formatCardsPreview(cards, pendingSkipped.get(userId) || []),
                                 {
                                     chat_id: chatId,
                                     message_id: messageId,
@@ -552,7 +751,7 @@ bot.on("callback_query", async q => {
                             ).catch(() => {})
                         }
                     } else {
-                        console.log(err)
+                        logError("send_to_anki", err)
                         await sendTempMessage(chatId, "Import failed. Please try again.")
                         await updateQueueMessage(chatId, userId)
                     }
@@ -574,7 +773,7 @@ bot.on("callback_query", async q => {
                 await bot.editMessageReplyMarkup(
                     {inline_keyboard: [[
                         {text: "Get CSV", callback_data: "get_csv"},
-                        {text: "Get text", callback_data: "get_text"},
+                        {text: "For Quizlet", callback_data: "get_text"},
                         {text: "Done", callback_data: "done"}
                     ]]},
                     {chat_id: chatId, message_id: messageId}
@@ -590,11 +789,20 @@ bot.on("callback_query", async q => {
                     await updateQueueMessage(chatId, userId)
                     return
                 }
-                await bot.sendMessage(chatId, generateText(cards))
+                const vocabText = generateText(cards)
+                await bot.sendMessage(chatId, vocabText)
+                const instrMsg = await bot.sendMessage(chatId,
+                    "Copy the message above. In Quizlet tap Import → set separator Between term and definition to ; (semicolon) and Between cards to New line.",
+                    {reply_markup: {inline_keyboard: [[
+                        {text: "📋 Copy", copy_text: {text: vocabText}},
+                        {text: "✓ Done", callback_data: "done_quizlet"}
+                    ]]}}
+                )
+                quizletInstructionIds.set(userId, instrMsg.message_id)
                 await bot.editMessageReplyMarkup(
                     {inline_keyboard: [[
                         {text: "Get CSV", callback_data: "get_csv"},
-                        {text: "Get text", callback_data: "get_text"},
+                        {text: "For Quizlet", callback_data: "get_text"},
                         {text: "Done", callback_data: "done"}
                     ]]},
                     {chat_id: chatId, message_id: messageId}
@@ -604,7 +812,13 @@ bot.on("callback_query", async q => {
             }
 
             case "done": {
+                const instrMsgId = quizletInstructionIds.get(userId)
+                if (instrMsgId) {
+                    await bot.deleteMessage(chatId, instrMsgId).catch(() => {})
+                    quizletInstructionIds.delete(userId)
+                }
                 pendingCards.delete(userId)
+                pendingSkipped.delete(userId)
                 await clearQueue(userId)
                 setQueueMessageId(userId, null)
                 await bot.editMessageReplyMarkup(
@@ -615,11 +829,18 @@ bot.on("callback_query", async q => {
                 break
             }
 
-            case "cancel_preview":
+            case "cancel_preview": {
+                const instrId = quizletInstructionIds.get(userId)
+                if (instrId) {
+                    await bot.deleteMessage(chatId, instrId).catch(() => {})
+                    quizletInstructionIds.delete(userId)
+                }
                 pendingCards.delete(userId)
+                pendingSkipped.delete(userId)
                 await bot.answerCallbackQuery(q.id)
                 await updateQueueMessage(chatId, userId)
                 break
+            }
 
             case "clear":
                 items = await getAll(userId)
@@ -629,6 +850,7 @@ bot.on("callback_query", async q => {
                 }
                 await clearQueue(userId)
                 pendingCards.delete(userId)
+                pendingSkipped.delete(userId)
                 setQueueMessageId(userId, messageId)
                 await bot.editMessageText(
                     "Queue cleared",
@@ -642,7 +864,7 @@ bot.on("callback_query", async q => {
                 break
         }
     } catch (err) {
-        console.log(err)
+        logError("callback", err)
         await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
         await updateQueueMessage(q.message.chat.id, q.from.id)
     }
