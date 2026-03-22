@@ -9,7 +9,5 @@ export function generateCSV(cards) {
 }
 
 export function generateText(cards) {
-    return cards
-        .map(c => `${c.word} — ${c.translation}${c.example ? "\n" + c.example + "\n" : ""}`)
-        .join("\n")
+    return cards.map(c => `${c.word};${c.translation}`).join("\n")
 }
