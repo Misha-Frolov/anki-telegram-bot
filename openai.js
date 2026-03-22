@@ -21,6 +21,7 @@ Generate Anki card JSON for English vocabulary.
 Translation must be in Russian. Do not explain the word in English.
 
 Keep phrases intact. Do not split phrases into words.
+Skip any input that is not a real English word or phrase (emojis, gibberish, typos, numbers only). Only include genuine vocabulary items.
 
 Deck must be one of:
 ${[...DECKS].join("\n")}
@@ -37,6 +38,8 @@ Generate flashcard JSON for ${language} vocabulary.
 Translation must be in Russian. Do not explain the word in ${language}.
 
 Keep phrases intact. Do not split phrases into words.
+Skip any input that is not a real ${language} word or phrase (emojis, gibberish, typos, numbers only).
+Only include genuine vocabulary items.
 `
 }
 
