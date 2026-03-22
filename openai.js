@@ -15,7 +15,8 @@ const DECKS = new Set([
     "Objects & Concepts",
 ])
 
-const SYSTEM_PROMPT = `
+// Full Anki prompt (English / admin mode)
+const SYSTEM_PROMPT_ANKI = `
 Generate Anki card JSON for English vocabulary.
 Translation must be in Russian. Do not explain the word in English.
 
@@ -29,43 +30,78 @@ level∷A1/A2/B1/B2/C1
 pos∷noun/verb/adjective/adverb/phrase/phrasal_verb
 `
 
-export async function generateCards(rawText) {
+// Simplified prompt for any other language
+function buildSimplePrompt(language) {
+    return `
+Generate flashcard JSON for ${language} vocabulary.
+Translation must be in Russian. Do not explain the word in ${language}.
+
+Keep phrases intact. Do not split phrases into words.
+`
+}
+
+const SCHEMA_ANKI = {
+    type: "object",
+    properties: {
+        cards: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    word: {type: "string"},
+                    translation: {type: "string"},
+                    example: {type: "string"},
+                    deck: {type: "string"},
+                    tags: {
+                        type: "array",
+                        items: {type: "string"},
+                        minItems: 2,
+                        maxItems: 2
+                    }
+                },
+                required: ["word", "translation", "example", "deck", "tags"]
+            }
+        }
+    },
+    required: ["cards"]
+}
+
+const SCHEMA_SIMPLE = {
+    type: "object",
+    properties: {
+        cards: {
+            type: "array",
+            items: {
+                type: "object",
+                properties: {
+                    word: {type: "string"},
+                    translation: {type: "string"},
+                    example: {type: "string"},
+                },
+                required: ["word", "translation", "example"]
+            }
+        }
+    },
+    required: ["cards"]
+}
+
+export async function generateCards(rawText, language = "English") {
+    const isAnkiMode = language === "English"
+    const systemPrompt = isAnkiMode ? SYSTEM_PROMPT_ANKI : buildSimplePrompt(language)
+    const schema = isAnkiMode ? SCHEMA_ANKI : SCHEMA_SIMPLE
+
     const res = await openai.chat.completions.create({
         model: "gpt-4.1-mini",
         temperature: 0,
         response_format: {
             type: "json_schema",
             json_schema: {
-                name: "anki_cards",
-                schema: {
-                    type: "object",
-                    properties: {
-                        cards: {
-                            type: "array",
-                            items: {
-                                type: "object",
-                                properties: {
-                                    word: {type: "string"},
-                                    translation: {type: "string"},
-                                    example: {type: "string"},
-                                    deck: {type: "string"},
-                                    tags: {
-                                        type: "array",
-                                        items: {type: "string"},
-                                        minItems: 2,
-                                        maxItems: 2
-                                    }
-                                },
-                                required: ["word", "translation", "example", "deck", "tags"]
-                            }
-                        }
-                    },
-                    required: ["cards"]
-                }
+                name: "flashcards",
+                schema
             }
         },
         messages: [
-            {role: "system", content: SYSTEM_PROMPT},
+            {role: "system", content: systemPrompt},
             {role: "user", content: rawText}
         ]
     })
@@ -80,9 +116,11 @@ export async function generateCards(rawText) {
         throw new Error("INVALID_JSON_FROM_LLM")
     }
 
-    const invalid = json.find(c => !DECKS.has(c.deck))
-    if (invalid) {
-        throw new Error(`INVALID_DECK_FROM_LLM: ${invalid.deck}`)
+    if (isAnkiMode) {
+        const invalid = json.find(c => !DECKS.has(c.deck))
+        if (invalid) {
+            throw new Error(`INVALID_DECK_FROM_LLM: ${invalid.deck}`)
+        }
     }
 
     return {cards: json, usage: res.usage}
