@@ -865,7 +865,7 @@ bot.on("callback_query", async q => {
         }
     } catch (err) {
         logError("callback", err)
-        await bot.answerCallbackQuery(q.id, {text: "Error occurred"})
-        await updateQueueMessage(q.message.chat.id, q.from.id)
+        await bot.answerCallbackQuery(q.id, {text: "Error occurred"}).catch(() => {})
+        await updateQueueMessage(q.message.chat.id, q.from.id).catch(() => {})
     }
 })
