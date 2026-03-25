@@ -27,6 +27,8 @@ db.serialize(() => {
         )
     `)
 
+    db.run(`ALTER TABLE anki_words ADD COLUMN translation TEXT`, () => {})
+
     // llm cache
     db.run(`
         CREATE TABLE IF NOT EXISTS llm_cache (
@@ -103,11 +105,13 @@ export function getCachedWords() {
     })
 }
 
-export function addCachedWord(word) {
+export function addCachedWord(word, translation = "") {
     return new Promise((resolve, reject) => {
         db.run(
-            "INSERT OR IGNORE INTO anki_words(word) VALUES(?)",
-            [word],
+            `INSERT INTO anki_words(word, translation) VALUES(?,?)
+             ON CONFLICT(word) DO UPDATE SET
+               translation = CASE WHEN anki_words.translation IS NULL THEN excluded.translation ELSE anki_words.translation END`,
+            [word, translation || null],
             err => {
                 if (err) reject(err)
                 else resolve()
@@ -116,18 +120,68 @@ export function addCachedWord(word) {
     })
 }
 
-export function addCachedWords(words) {
+export function addCachedWords(words, translations = []) {
     return new Promise((resolve, reject) => {
         const stmt = db.prepare(
-            "INSERT OR IGNORE INTO anki_words(word) VALUES(?)"
+            `INSERT INTO anki_words(word, translation) VALUES(?,?)
+             ON CONFLICT(word) DO UPDATE SET
+               translation = CASE WHEN anki_words.translation IS NULL THEN excluded.translation ELSE anki_words.translation END`
         )
-        for (const w of words) {
-            stmt.run(w)
+        for (let i = 0; i < words.length; i++) {
+            stmt.run(words[i], translations[i] || null)
         }
         stmt.finalize(err => {
             if (err) reject(err)
             else resolve()
         })
+    })
+}
+
+export function getAnkiWordsCount() {
+    return new Promise((resolve, reject) => {
+        db.get("SELECT COUNT(*) AS n FROM anki_words", (err, row) => {
+            if (err) reject(err)
+            else resolve(row.n)
+        })
+    })
+}
+
+export function getAnkiWordsPage(offset, limit) {
+    return new Promise((resolve, reject) => {
+        db.all(
+            "SELECT word, translation FROM anki_words ORDER BY rowid LIMIT ? OFFSET ?",
+            [limit, offset],
+            (err, rows) => {
+                if (err) reject(err)
+                else resolve(rows)
+            }
+        )
+    })
+}
+
+export function getRandomAnkiWords(n) {
+    return new Promise((resolve, reject) => {
+        db.all(
+            "SELECT word, translation FROM anki_words ORDER BY RANDOM() LIMIT ?",
+            [n],
+            (err, rows) => {
+                if (err) reject(err)
+                else resolve(rows)
+            }
+        )
+    })
+}
+
+export function getLastAnkiWords(n) {
+    return new Promise((resolve, reject) => {
+        db.all(
+            "SELECT word, translation FROM anki_words ORDER BY rowid DESC LIMIT ?",
+            [n],
+            (err, rows) => {
+                if (err) reject(err)
+                else resolve(rows)
+            }
+        )
     })
 }
 

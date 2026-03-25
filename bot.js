@@ -10,7 +10,8 @@ import {
     getUserSetting, setUserSetting,
     addTokenUsage, getTokenUsage,
     addGoogleTranslateWords,
-    getUserTokenUsage, getGoogleTranslateWords, getAllUsersWithStats
+    getUserTokenUsage, getGoogleTranslateWords, getAllUsersWithStats,
+    getAnkiWordsCount, getAnkiWordsPage, getRandomAnkiWords, getLastAnkiWords
 } from "./db.js"
 import {Readable} from "stream"
 import {generateCards} from "./openai.js"
@@ -74,6 +75,13 @@ bot.setMyCommands([
     {command: "resync", description: "Rebuild Anki cache"},
 ], {scope: {type: "chat", chat_id: ADMIN_ID}}).catch(console.error)
 
+for (const teacherId of TEACHER_IDS) {
+    bot.setMyCommands([
+        {command: "start", description: "Start bot"},
+        {command: "clear", description: "Clear queue"},
+    ], {scope: {type: "chat", chat_id: teacherId}}).catch(console.error)
+}
+
 // Per-user in-memory state
 const queueMessageIds = new Map()    // userId → messageId
 const importInProgress = new Set()   // userId
@@ -83,6 +91,7 @@ const startMessageIds = new Map()          // userId → messageId
 const langPickerMessageIds = new Map()     // userId → messageId
 const quizletInstructionIds = new Map()    // userId → messageId
 const awaitingLangInput = new Map()        // userId → {promptMsgId, onboarding}
+const teacherModePickerIds = new Map()     // userId → messageId
 
 const PICKER_LANGUAGES = [
     ["English", "Spanish", "French", "German"],
@@ -109,6 +118,26 @@ async function sendStartMessage(chatId, userId) {
         : `Send words or phrases in ${lang} or change language: /lang <language>`
     const sent = await bot.sendMessage(chatId, text)
     startMessageIds.set(userId, sent.message_id)
+}
+
+async function sendTeacherStartMessage(chatId, userId) {
+    const adminName = await getUserSetting(ADMIN_ID, "name").catch(() => null) || "Admin"
+    const sent = await bot.sendMessage(chatId,
+        `Send words or phrases for ${adminName}`,
+        {reply_markup: {inline_keyboard: [[
+            {text: "📚 Browse Anki words", callback_data: "browse_menu"}
+        ]]}}
+    )
+    startMessageIds.set(userId, sent.message_id)
+}
+
+function formatWordList(words) {
+    if (!words.length) return "<i>List is empty</i>"
+    return words.map(w =>
+        w.translation
+            ? `${escapeHtml(w.word)} — ${escapeHtml(w.translation)}`
+            : escapeHtml(w.word)
+    ).join("\n")
 }
 
 // Returns true if language was saved successfully
@@ -205,20 +234,25 @@ async function ensureAnkiCache() {
         const notes = await anki("notesInfo", {
             notes: ids
         })
-        const words = notes.map(n => normalize(n.fields.Word.value))
-        await addCachedWords(words)
-        console.log(`Cached ${words.length} words`)
+        const pairs = notes.map(n => ({
+            word: normalize(n.fields.Word.value),
+            translation: n.fields.Translation?.value || ""
+        }))
+        await addCachedWords(pairs.map(p => p.word), pairs.map(p => p.translation))
+        console.log(`Cached ${pairs.length} words`)
     } catch (err) {
         logError("ensureAnkiCache", err)
     }
 }
 
-async function updateQueueMessage(chatId, userId) {
+async function updateQueueMessage(chatId, userId, queueUserId = null) {
+    const isTeacherView = queueUserId !== null
+    const effectiveUserId = isTeacherView ? queueUserId : userId
     const isAdmin = userId === ADMIN_ID
 
-    // Restore queue message ID from DB if not in memory
+    // Restore queue message ID from DB only for non-teacher views
     let queueMsgId = queueMessageIds.get(userId)
-    if (!queueMsgId) {
+    if (!queueMsgId && !isTeacherView) {
         const stored = await getUserSetting(userId, "queue_message_id").catch(() => null)
         if (stored && stored !== "0") {
             queueMsgId = Number(stored)
@@ -226,7 +260,7 @@ async function updateQueueMessage(chatId, userId) {
         }
     }
 
-    const items = await getAll(userId)
+    const items = await getAll(effectiveUserId)
     if (!items.length) {
         const text = "Queue is empty"
         if (queueMsgId) {
@@ -241,10 +275,18 @@ async function updateQueueMessage(chatId, userId) {
                 )
                 if (ok) return
             } catch {}
-            setQueueMessageId(userId, null)
+            if (isTeacherView) {
+                queueMessageIds.delete(userId)
+            } else {
+                setQueueMessageId(userId, null)
+            }
         }
         const sent = await bot.sendMessage(chatId, text)
-        setQueueMessageId(userId, sent.message_id)
+        if (isTeacherView) {
+            queueMessageIds.set(userId, sent.message_id)
+        } else {
+            setQueueMessageId(userId, sent.message_id)
+        }
         return
     }
 
@@ -253,29 +295,38 @@ async function updateQueueMessage(chatId, userId) {
         .slice(0, limit)
         .map((w, i) => `${i + 1}. ${escapeHtml(w)}`)
         .join("\n")
-    let message = `Queued words: ${items.length}\n\n${preview}`
+
+    let header
+    if (isTeacherView) {
+        const adminName = await getUserSetting(effectiveUserId, "name").catch(() => null) || "Admin"
+        header = `Queued words for ${escapeHtml(adminName)}: ${items.length}`
+    } else {
+        header = `Queued words: ${items.length}`
+    }
+    let message = `${header}\n\n${preview}`
     if (items.length > limit) {
         message += `\n...and ${items.length - limit} more`
     }
 
-    let allExist = false
-    if (isAdmin) {
-        try {
-            const cached = await getCachedWords()
-            allExist = items.every(t => cached.has(normalize(t)))
-        } catch {}
-        if (allExist) {
-            message += `\n\n<b>All words already exist in Anki</b>`
+    let markup
+    if (isTeacherView) {
+        markup = {parse_mode: "HTML", reply_markup: {inline_keyboard: []}}
+    } else {
+        let allExist = false
+        if (isAdmin) {
+            try {
+                const cached = await getCachedWords()
+                allExist = items.every(t => cached.has(normalize(t)))
+            } catch {}
+            if (allExist) {
+                message += `\n\n<b>All words already exist in Anki</b>`
+            }
         }
-    }
-
-    const buttons = [
-        ...(!allExist ? [{text: "Generate flashcards", callback_data: "generate"}] : []),
-        {text: "Clear queue", callback_data: "clear"}
-    ]
-    const markup = {
-        parse_mode: "HTML",
-        reply_markup: {inline_keyboard: [buttons]}
+        const buttons = [
+            ...(!allExist ? [{text: "Generate flashcards", callback_data: "generate"}] : []),
+            {text: "Clear queue", callback_data: "clear"}
+        ]
+        markup = {parse_mode: "HTML", reply_markup: {inline_keyboard: [buttons]}}
     }
 
     if (queueMsgId) {
@@ -283,10 +334,18 @@ async function updateQueueMessage(chatId, userId) {
             const ok = await bot.editMessageText(message, {chat_id: chatId, message_id: queueMsgId, ...markup})
             if (ok) return
         } catch {}
-        setQueueMessageId(userId, null)
+        if (isTeacherView) {
+            queueMessageIds.delete(userId)
+        } else {
+            setQueueMessageId(userId, null)
+        }
     }
     const sent = await bot.sendMessage(chatId, message, markup)
-    setQueueMessageId(userId, sent.message_id)
+    if (isTeacherView) {
+        queueMessageIds.set(userId, sent.message_id)
+    } else {
+        setQueueMessageId(userId, sent.message_id)
+    }
 }
 
 function escapeHtml(s) {
@@ -342,7 +401,9 @@ bot.on("message", async msg => {
     }
 
     const isTeacher = TEACHER_IDS.includes(userId)
-    const targetUserId = isTeacher ? ADMIN_ID : userId
+    const teacherMode = isTeacher ? await getUserSetting(userId, "teacher_mode") : null
+    const isTeacherMode = isTeacher && teacherMode !== "personal"
+    const targetUserId = isTeacherMode ? ADMIN_ID : userId
 
     const parts = splitInput(text)
 
@@ -360,7 +421,7 @@ bot.on("message", async msg => {
     for (const p of parts) {
         const n = normalize(p)
         if (existing.has(n)) {
-            if (!isTeacher) await sendTempMessage(chatId, `"${p}" already in queue`)
+            if (!isTeacherMode) await sendTempMessage(chatId, `"${p}" already in queue`)
             continue
         }
         if (ankiWords.has(n)) {
@@ -384,8 +445,8 @@ bot.on("message", async msg => {
             startMessageIds.delete(userId)
         }
         bot.deleteMessage(chatId, msg.message_id).catch(() => {})
-        if (isTeacher) {
-            await sendTempMessage(chatId, `Added to queue ✓`)
+        if (isTeacherMode) {
+            await updateQueueMessage(chatId, userId, ADMIN_ID)
         } else {
             await updateQueueMessage(chatId, userId)
         }
@@ -399,7 +460,19 @@ bot.onText(/\/start/, async msg => {
     const userId = msg.from.id
     const isAdmin = userId === ADMIN_ID
     const isTeacher = TEACHER_IDS.includes(userId)
-    if (!isAdmin && !isTeacher) {
+
+    if (isTeacher) {
+        const sent = await bot.sendMessage(msg.chat.id, "Choose mode:", {
+            reply_markup: {inline_keyboard: [[
+                {text: "👩‍🏫 Teacher",  callback_data: "teacher_mode:teacher"},
+                {text: "👤 Personal", callback_data: "teacher_mode:personal"}
+            ]]}
+        })
+        teacherModePickerIds.set(userId, sent.message_id)
+        return
+    }
+
+    if (!isAdmin) {
         const lang = await getUserSetting(userId, "lang").catch(() => null)
         if (!lang) {
             await sendLanguagePicker(msg.chat.id, userId)
@@ -429,10 +502,13 @@ bot.onText(/\/resync/, async msg => {
             "notesInfo",
             {notes: ids}
         )
-        const words = notes.map(n => normalize(n.fields.Word.value))
+        const pairs = notes.map(n => ({
+            word: normalize(n.fields.Word.value),
+            translation: n.fields.Translation?.value || ""
+        }))
         await clearAnkiCache()
-        await addCachedWords(words)
-        await sendTempMessage(msg.chat.id, `Cache rebuilt: ${words.length} words`)
+        await addCachedWords(pairs.map(p => p.word), pairs.map(p => p.translation))
+        await sendTempMessage(msg.chat.id, `Cache rebuilt: ${pairs.length} words`)
     } catch (err) {
         logError("resync", err)
         await sendTempMessage(msg.chat.id, "Failed to rebuild cache")
@@ -511,6 +587,71 @@ bot.on("callback_query", async q => {
     const messageId = q.message.message_id
     const userId = q.from.id
     let items
+
+    // Teacher mode picker — handle before the outdated-message guard
+    if (q.data === "teacher_mode:teacher" || q.data === "teacher_mode:personal") {
+        const mode = q.data === "teacher_mode:teacher" ? "teacher" : "personal"
+        await bot.deleteMessage(chatId, messageId).catch(() => {})
+        teacherModePickerIds.delete(userId)
+        await bot.answerCallbackQuery(q.id)
+        await setUserSetting(userId, "teacher_mode", mode)
+        if (mode === "teacher") {
+            await sendTeacherStartMessage(chatId, userId)
+        } else {
+            const lang = await getUserSetting(userId, "lang")
+            if (!lang) {
+                await sendLanguagePicker(chatId, userId)
+                return
+            }
+            await sendStartMessage(chatId, userId)
+            await updateQueueMessage(chatId, userId)
+        }
+        return
+    }
+
+    // Browse Anki words — handle before the outdated-message guard
+    if (q.data === "browse_menu") {
+        await bot.answerCallbackQuery(q.id)
+        const count = await getAnkiWordsCount()
+        await bot.sendMessage(chatId,
+            `Words in Anki: ${count}. What to show?`,
+            {reply_markup: {inline_keyboard: [[
+                {text: "Full list",  callback_data: "browse_all:0"},
+                {text: "10 random",  callback_data: "browse_random"},
+                {text: "10 latest",  callback_data: "browse_last"},
+            ]]}}
+        )
+        return
+    }
+
+    if (q.data === "browse_random" || q.data === "browse_last") {
+        const words = q.data === "browse_random"
+            ? await getRandomAnkiWords(10)
+            : await getLastAnkiWords(10)
+        await bot.editMessageText(formatWordList(words),
+            {chat_id: chatId, message_id: messageId, parse_mode: "HTML"})
+        await bot.answerCallbackQuery(q.id)
+        return
+    }
+
+    if (q.data.startsWith("browse_all:")) {
+        const PAGE = 30
+        const offset = parseInt(q.data.slice("browse_all:".length)) || 0
+        const [words, total] = await Promise.all([getAnkiWordsPage(offset, PAGE), getAnkiWordsCount()])
+        const hasNext = offset + PAGE < total
+        await bot.editMessageText(
+            formatWordList(words) + `\n\n<i>${offset + words.length} / ${total}</i>`,
+            {
+                chat_id: chatId, message_id: messageId,
+                parse_mode: "HTML",
+                reply_markup: {inline_keyboard: hasNext
+                    ? [[{text: "Next →", callback_data: `browse_all:${offset + PAGE}`}]]
+                    : []}
+            }
+        )
+        await bot.answerCallbackQuery(q.id)
+        return
+    }
 
     // Quizlet instruction dismiss — handle before the outdated-message guard
     if (q.data === "done_quizlet") {
@@ -720,7 +861,10 @@ bot.on("callback_query", async q => {
                         tags: c.tags
                     }))
                     await anki("addNotes", {notes})
-                    await addCachedWords(cards.map(c => normalize(c.word)))
+                    await addCachedWords(
+                        cards.map(c => normalize(c.word)),
+                        cards.map(c => c.translation)
+                    )
                     await clearQueue(userId)
                     pendingCards.delete(userId)
                     pendingSkipped.delete(userId)
