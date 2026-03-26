@@ -12,17 +12,18 @@ to Anki, other users export a CSV file compatible with Quizlet and other apps.
 * Admin: preview cards → import to Anki with pronunciation audio (Google TTS)
 * Users: preview cards → export CSV or Quizlet-compatible text
 * Deduplication against the queue and existing Anki cards (admin, checked at input and at generate)
-* Invalid words filtered before translation (GPT prompt instruction; Free Dictionary API / Wiktionary for Google Translate)
+* Invalid words filtered before translation (GPT prompt instruction; Free Dictionary API for English / native-language
+  Wiktionary for other languages when using Google Translate)
 * LLM results cached in SQLite to avoid redundant API calls
 * Per-user token usage and cost tracking (`/stats`, admin only)
 
 ## Roles
 
-| Role        | How to configure              | Behaviour                                                        |
-|-------------|-------------------------------|------------------------------------------------------------------|
-| **Admin**   | `TELEGRAM_ADMIN_ID` in `.env` | Full access: generate cards, import to Anki, `/stats`, `/resync` |
-| **Teacher** | `TEACHER_IDS` in `.env`       | Words go to the admin's queue; receives a temporary confirmation |
-| **User**    | Everyone else                 | Personal queue, generate cards, export CSV / plain text          |
+| Role        | How to configure              | Behaviour                                                                                                            |
+|-------------|-------------------------------|----------------------------------------------------------------------------------------------------------------------|
+| **Admin**   | `TELEGRAM_ADMIN_ID` in `.env` | Full access: generate cards, import to Anki, `/stats`, `/resync`                                                     |
+| **Teacher** | `TEACHER_IDS` in `.env`       | On `/start`, choose **Teacher** mode (words → admin's queue) or **Personal** mode (own queue, same workflow as User) |
+| **User**    | Everyone else                 | Personal queue, generate cards, export CSV / plain text                                                              |
 
 ## Workflow
 
@@ -104,9 +105,10 @@ Tags: `level∷A1/A2/B1/B2/C1` and `pos∷noun/verb/adjective/adverb/phrase/phra
 
 ## Export formats (users)
 
-**CSV** (`Get CSV`): tab-separated with Anki-compatible header (`#separator:tab`). Importable into Anki, Excel, and most flashcard apps.
+**CSV** (`Get CSV`): tab-separated with Anki-compatible header (`#separator:tab`). Importable into Anki, Excel, and most
+flashcard apps.
 
-**Quizlet text** (`For Quizlet`): `word;translation` per line. 
+**Quizlet text** (`For Quizlet`): `word;translation` per line.
 In Quizlet Import set separator *Between term and definition* to `;` (semicolon) and *Between cards* to *New line*.
 The bot sends a 📋 Copy button for convenience.
 

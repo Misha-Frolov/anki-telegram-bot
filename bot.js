@@ -167,10 +167,19 @@ async function trySetLanguage(chatId, userId, raw) {
     return false
 }
 
-// Restore admin's queue message ID from DB on startup
+// Restore queue message IDs from DB on startup for admin and personal-mode teachers
 getUserSetting(ADMIN_ID, "queue_message_id").then(val => {
     if (val && val !== "0") queueMessageIds.set(ADMIN_ID, Number(val))
 }).catch(console.error)
+
+for (const tid of TEACHER_IDS) {
+    getUserSetting(tid, "teacher_mode").then(mode => {
+        if (mode !== "personal") return
+        return getUserSetting(tid, "queue_message_id").then(val => {
+            if (val && val !== "0") queueMessageIds.set(tid, Number(val))
+        })
+    }).catch(console.error)
+}
 
 function setQueueMessageId(userId, id) {
     if (id) {
