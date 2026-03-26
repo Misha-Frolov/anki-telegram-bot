@@ -879,6 +879,7 @@ bot.on("callback_query", async q => {
                         {chat_id: chatId, message_id: messageId}
                     )
                     await bot.answerCallbackQuery(q.id)
+                    anki("sync").catch(() => {})
                 } catch (err) {
                     if (err.code === "ECONNREFUSED") {
                         await sendTempMessage(chatId, "Anki is not running. Start Anki and try again.")
