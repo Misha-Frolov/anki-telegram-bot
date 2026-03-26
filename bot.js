@@ -135,8 +135,8 @@ function formatWordList(words) {
     if (!words.length) return "<i>List is empty</i>"
     return words.map(w =>
         w.translation
-            ? `${escapeHtml(w.word)} — ${escapeHtml(w.translation)}`
-            : escapeHtml(w.word)
+            ? `<b>${escapeHtml(w.word)}</b> — ${escapeHtml(w.translation)}`
+            : `<b>${escapeHtml(w.word)}</b>`
     ).join("\n")
 }
 
@@ -293,7 +293,7 @@ async function updateQueueMessage(chatId, userId, queueUserId = null) {
     const limit = 5
     const preview = items
         .slice(0, limit)
-        .map((w, i) => `${i + 1}. ${escapeHtml(w)}`)
+        .map((w, i) => `${i + 1}. <b>${escapeHtml(w)}</b>`)
         .join("\n")
 
     let header
@@ -510,8 +510,13 @@ bot.onText(/\/resync/, async msg => {
         await addCachedWords(pairs.map(p => p.word), pairs.map(p => p.translation))
         await sendTempMessage(msg.chat.id, `Cache rebuilt: ${pairs.length} words`)
     } catch (err) {
-        logError("resync", err)
-        await sendTempMessage(msg.chat.id, "Failed to rebuild cache")
+        const isConnErr = err.type === "system" || err.code === "ECONNREFUSED"
+        if (isConnErr) {
+            console.log("[resync] Anki unavailable")
+        } else {
+            logError("resync", err)
+        }
+        await sendTempMessage(msg.chat.id, isConnErr ? "Anki is not running" : "Failed to rebuild cache")
     }
 })
 
