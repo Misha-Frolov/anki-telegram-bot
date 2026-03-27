@@ -550,21 +550,21 @@ bot.onText(/\/stats/, async msg => {
             const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0')
             return `${y}-${m}-${day}`
         }
-        const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return localDate(d) }
         const countMap = new Map(days.map(d => [d[0], d[1]]))
-        const today = countMap.get(localDate(new Date())) ?? 0
-        const datesIn = (n) => Array.from({length: n}, (_, i) => daysAgo(i))
-        const sum7  = datesIn(7).reduce((s, d) => s + (countMap.get(d) ?? 0), 0)
-        const sum30 = datesIn(30).reduce((s, d) => s + (countMap.get(d) ?? 0), 0)
-        const activeDays7 = datesIn(7).filter(d => countMap.has(d)).length
-        const avg7  = activeDays7 ? Math.round(sum7 / activeDays7) : 0
-        const lines = [
-            `📊 <b>Words learned:</b>`,
-            ``,
-            `today: <b>${today}</b>`,
-            `in 7 days: <b>${sum7}</b> (avg ${avg7}/day)`,
-            `in 30 days: <b>${sum30}</b>`,
-        ]
+        const dayLabels = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
+        const isTeacher = TEACHER_IDS.includes(userId)
+        let header = "Words learned:"
+        if (isTeacher) {
+            const adminName = await getUserSetting(ADMIN_ID, "name")
+            header = `Words learned by ${adminName || "student"}:`
+        }
+        const lines = [`📊 <b>${header}</b>`, ``]
+        for (let i = 0; i < 7; i++) {
+            const date = new Date(); date.setDate(date.getDate() - i)
+            const label = i === 0 ? "Today" : i === 1 ? "Yesterday" : dayLabels[date.getDay()]
+            const count = countMap.get(localDate(date)) ?? 0
+            lines.push(`${label}: <b>${count}</b>`)
+        }
         await bot.sendMessage(msg.chat.id, lines.join("\n"), {parse_mode: "HTML"})
     } catch (err) {
         const isConnErr = err.code === "ECONNREFUSED" || err.type === "system"
