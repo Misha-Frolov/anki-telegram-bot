@@ -50,6 +50,8 @@ const bot = new TelegramBot(
     {polling: true}
 )
 
+bot.getMe().then(me => console.log(`Bot started: @${me.username}`)).catch(console.error)
+
 const AUTO_DELETE_MS = 3000
 async function sendTempMessage(chatId, text, options = {}) {
     const msg = await bot.sendMessage(chatId, text, options)
@@ -71,7 +73,8 @@ bot.setMyCommands([
 bot.setMyCommands([
     {command: "start", description: "Start bot"},
     {command: "clear", description: "Clear queue"},
-    {command: "stats", description: "Show token usage and cost"},
+    {command: "stats", description: "Study statistics"},
+    {command: "usage", description: "Token usage and cost"},
     {command: "resync", description: "Rebuild Anki cache"},
 ], {scope: {type: "chat", chat_id: ADMIN_ID}}).catch(console.error)
 
@@ -79,6 +82,7 @@ for (const teacherId of TEACHER_IDS) {
     bot.setMyCommands([
         {command: "start", description: "Start bot"},
         {command: "clear", description: "Clear queue"},
+        {command: "stats", description: "Study statistics"},
     ], {scope: {type: "chat", chat_id: teacherId}}).catch(console.error)
 }
 
@@ -254,7 +258,7 @@ async function ensureAnkiCache() {
     }
 }
 
-async function updateQueueMessage(chatId, userId, queueUserId = null) {
+async function updateQueueMessage(chatId, userId, queueUserId = null, notice = null) {
     const isTeacherView = queueUserId !== null
     const effectiveUserId = isTeacherView ? queueUserId : userId
     const isAdmin = userId === ADMIN_ID
@@ -315,6 +319,9 @@ async function updateQueueMessage(chatId, userId, queueUserId = null) {
     let message = `${header}\n\n${preview}`
     if (items.length > limit) {
         message += `\n...and ${items.length - limit} more`
+    }
+    if (notice) {
+        message += `\n\n<b>${escapeHtml(notice)}</b>`
     }
 
     let markup
@@ -534,6 +541,39 @@ const PRICE_INPUT  = 0.40
 const PRICE_OUTPUT = 1.60
 
 bot.onText(/\/stats/, async msg => {
+    const userId = msg.from.id
+    if (userId !== ADMIN_ID && !TEACHER_IDS.includes(userId)) return
+    try {
+        const days = await anki("getNumCardsReviewedByDay")
+        // days: array of [dateString "YYYY-MM-DD", count], newest first; missing days have no entry
+        const localDate = d => {
+            const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0')
+            return `${y}-${m}-${day}`
+        }
+        const daysAgo = n => { const d = new Date(); d.setDate(d.getDate() - n); return localDate(d) }
+        const countMap = new Map(days.map(d => [d[0], d[1]]))
+        const today = countMap.get(localDate(new Date())) ?? 0
+        const datesIn = (n) => Array.from({length: n}, (_, i) => daysAgo(i))
+        const sum7  = datesIn(7).reduce((s, d) => s + (countMap.get(d) ?? 0), 0)
+        const sum30 = datesIn(30).reduce((s, d) => s + (countMap.get(d) ?? 0), 0)
+        const activeDays7 = datesIn(7).filter(d => countMap.has(d)).length
+        const avg7  = activeDays7 ? Math.round(sum7 / activeDays7) : 0
+        const lines = [
+            `📊 <b>Words learned:</b>`,
+            ``,
+            `today: <b>${today}</b>`,
+            `in 7 days: <b>${sum7}</b> (avg ${avg7}/day)`,
+            `in 30 days: <b>${sum30}</b>`,
+        ]
+        await bot.sendMessage(msg.chat.id, lines.join("\n"), {parse_mode: "HTML"})
+    } catch (err) {
+        const isConnErr = err.code === "ECONNREFUSED" || err.type === "system"
+        await sendTempMessage(msg.chat.id, isConnErr ? "Anki is not running" : "Failed to get stats")
+        if (!isConnErr) logError("stats", err)
+    }
+})
+
+bot.onText(/\/usage/, async msg => {
     if (msg.from.id !== ADMIN_ID) return
 
     const userIds = await getAllUsersWithStats()
@@ -791,11 +831,8 @@ bot.on("callback_query", async q => {
                     if (!cards.length) {
                         pendingCards.delete(userId)
                         pendingSkipped.delete(userId)
-                        await bot.editMessageText(
-                            "No vocabulary detected",
-                            {chat_id: chatId, message_id: messageId, reply_markup: {inline_keyboard: []}}
-                        )
                         await bot.answerCallbackQuery(q.id)
+                        await updateQueueMessage(chatId, userId, null, "No vocabulary detected")
                         break
                     }
 
