@@ -120,9 +120,8 @@ export async function generateCards(rawText, language = "English") {
     }
 
     if (isAnkiMode) {
-        const invalid = json.find(c => !DECKS.has(c.deck))
-        if (invalid) {
-            throw new Error(`INVALID_DECK_FROM_LLM: ${invalid.deck}`)
+        for (const c of json) {
+            if (!DECKS.has(c.deck)) c.deck = "Objects & Concepts"
         }
     }
 

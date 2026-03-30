@@ -544,8 +544,8 @@ bot.onText(/\/stats/, async msg => {
     const userId = msg.from.id
     if (userId !== ADMIN_ID && !TEACHER_IDS.includes(userId)) return
     try {
+        await anki("sync")
         const days = await anki("getNumCardsReviewedByDay")
-        // days: array of [dateString "YYYY-MM-DD", count], newest first; missing days have no entry
         const localDate = d => {
             const y = d.getFullYear(), m = String(d.getMonth()+1).padStart(2,'0'), day = String(d.getDate()).padStart(2,'0')
             return `${y}-${m}-${day}`
@@ -553,10 +553,10 @@ bot.onText(/\/stats/, async msg => {
         const countMap = new Map(days.map(d => [d[0], d[1]]))
         const dayLabels = ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"]
         const isTeacher = TEACHER_IDS.includes(userId)
-        let header = "Words learned:"
+        let header = "Reviews:"
         if (isTeacher) {
             const adminName = await getUserSetting(ADMIN_ID, "name")
-            header = `Words learned by ${adminName || "student"}:`
+            header = `Reviews by ${adminName || "student"}:`
         }
         const lines = [`📊 <b>${header}</b>`, ``]
         for (let i = 0; i < 7; i++) {
@@ -866,8 +866,6 @@ bot.on("callback_query", async q => {
                         await sendTempMessage(chatId, "OpenAI API quota exceeded. Check billing.")
                     } else if (err.message === "INVALID_JSON_FROM_LLM") {
                         await sendTempMessage(chatId, "Failed to parse AI response. Please try again.")
-                    } else if (err.message?.startsWith("INVALID_DECK_FROM_LLM")) {
-                        await sendTempMessage(chatId, "AI returned an unknown deck. Please try again.")
                     } else {
                         logError("generate", err)
                     }

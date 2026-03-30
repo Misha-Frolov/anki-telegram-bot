@@ -15,7 +15,8 @@ to Anki, other users export a CSV file compatible with Quizlet and other apps.
 * Invalid words filtered before translation (GPT prompt instruction; Free Dictionary API for English / native-language
   Wiktionary for other languages when using Google Translate)
 * LLM results cached in SQLite to avoid redundant API calls
-* Per-user token usage and cost tracking (`/stats`, admin only)
+* Per-user token usage and cost tracking (`/usage`, admin only)
+* Anki review stats for the last 7 days (`/stats`, admin and teachers)
 
 ## Roles
 
@@ -49,7 +50,8 @@ to Anki, other users export a CSV file compatible with Quizlet and other apps.
 | `/start`           | All        | Show the queue message                         |
 | `/clear`           | All        | Clear your own queue                           |
 | `/lang [language]` | Users only | Set translation language, e.g. `/lang Turkish` |
-| `/stats`           | Admin      | Per-user token usage and estimated cost        |
+| `/stats`           | Admin, Teachers | Anki review count for the last 7 days     |
+| `/usage`           | Admin      | Per-user token usage and estimated cost        |
 | `/resync`          | Admin      | Rebuild the local Anki word cache              |
 
 ## Requirements
