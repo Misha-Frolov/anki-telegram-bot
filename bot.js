@@ -682,8 +682,11 @@ bot.on("callback_query", async q => {
         const words = q.data === "browse_random"
             ? await getRandomAnkiWords(10)
             : await getLastAnkiWords(10)
-        await bot.editMessageText(formatWordList(words),
-            {chat_id: chatId, message_id: messageId, parse_mode: "HTML"})
+        const opts = {chat_id: chatId, message_id: messageId, parse_mode: "HTML"}
+        if (q.data === "browse_random") opts.reply_markup = {inline_keyboard: [[
+            {text: "🔀 10 more random", callback_data: "browse_random"}
+        ]]}
+        await bot.editMessageText(formatWordList(words), opts)
         await bot.answerCallbackQuery(q.id)
         return
     }
