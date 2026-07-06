@@ -912,17 +912,43 @@ bot.on("callback_query", async q => {
                         },
                         tags: c.tags
                     }))
-                    await anki("addNotes", {notes})
-                    await addCachedWords(
-                        cards.map(c => normalize(c.word)),
-                        cards.map(c => c.translation)
-                    )
+                    for (const deck of new Set(cards.map(c => c.deck))) {
+                        await anki("createDeck", {deck})
+                    }
+                    // addNotes returns null (not an error) for notes Anki rejected,
+                    // e.g. duplicates — so each result must be checked individually
+                    const result = await anki("addNotes", {notes})
+                    const added = cards.filter((_, i) => result[i] !== null)
+                    const failed = cards.filter((_, i) => result[i] === null)
+                    let failLines = []
+                    if (failed.length) {
+                        let details = null
+                        try {
+                            details = await anki("canAddNotesWithErrorDetail", {
+                                notes: notes.filter((_, i) => result[i] === null)
+                            })
+                        } catch {}
+                        failLines = failed.map((c, i) => `${c.word} — ${details?.[i]?.error || "rejected by Anki"}`)
+                        logError("addNotes", new Error(`${failed.length} note(s) rejected: ${failLines.join("; ")}`))
+                    }
+                    if (added.length) {
+                        await addCachedWords(
+                            added.map(c => normalize(c.word)),
+                            added.map(c => c.translation)
+                        )
+                    }
                     await clearQueue(userId)
                     pendingCards.delete(userId)
                     pendingSkipped.delete(userId)
                     setQueueMessageId(userId, null)
+                    let resultText = added.length
+                        ? `Imported ${added.length} card${added.length !== 1 ? "s" : ""}:\n\n${added.map(c => c.word).join("\n")}`
+                        : "No cards were imported."
+                    if (failed.length) {
+                        resultText += `\n\nNot imported (${failed.length}):\n${failLines.join("\n")}`
+                    }
                     await bot.editMessageText(
-                        `Imported ${notes.length} card${notes.length !== 1 ? "s" : ""}:\n\n${cards.map(c => c.word).join("\n")}`,
+                        resultText,
                         {chat_id: chatId, message_id: messageId}
                     )
                     await bot.answerCallbackQuery(q.id)
