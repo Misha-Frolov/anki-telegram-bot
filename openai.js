@@ -11,6 +11,7 @@ const DECKS = new Set([
     "Clothes & Appearance",
     "Nature & Environment",
     "Work & Career",
+    "IT & Technology",
     "Personality & Emotions",
     "Objects & Concepts",
 ])
