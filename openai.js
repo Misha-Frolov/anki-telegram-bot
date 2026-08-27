@@ -5,7 +5,7 @@ const openai = new OpenAI({apiKey: OPENAI_KEY})
 
 const DECKS = new Set([
     "Health & Body",
-    "Home & Daily Life",
+    "Home & Daily life",
     "Travel & Transport",
     "Food & Cooking",
     "Clothes & Appearance",
@@ -13,6 +13,9 @@ const DECKS = new Set([
     "Work & Career",
     "IT & Technology",
     "Personality & Emotions",
+    "Money & Finance",
+    "Actions & Movement",
+    "History & Mythology",
     "Objects & Concepts",
 ])
 
@@ -26,6 +29,12 @@ Skip any input that is not a real English word or phrase (emojis, gibberish, typ
 
 Deck must be one of:
 ${[...DECKS].join("\n")}
+
+Deck hints:
+- Actions & Movement — verbs of motion, posture, gesture and facial expression (kneel, leap, shrug, stumble).
+- Money & Finance — money, prices, paying, earning, lending, debt, tax, banking. Wins over Work & Career when the item is about money rather than a job.
+- History & Mythology — weapons, ancient warfare, rites, myth, royal court.
+- Objects & Concepts is the last resort — prefer a specific deck whenever one applies.
 
 Tags:
 level∷A1/A2/B1/B2/C1
